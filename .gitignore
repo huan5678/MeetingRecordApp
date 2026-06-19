@@ -1,0 +1,39 @@
+# Node / frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Rust / Tauri
+src-tauri/target/
+**/*.rs.bk
+
+# Models (whisper.cpp / sherpa-onnx — downloaded, large)
+models/
+*.bin
+*.gguf
+*.onnx
+
+# Recordings / media (local data)
+recordings/
+*.wav
+*.flac
+*.mp4
+*.webm
+
+# Secrets / env
+.env
+.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Logs / db
+*.log
+*.sqlite
+*.sqlite-*

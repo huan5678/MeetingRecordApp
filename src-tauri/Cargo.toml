@@ -1,0 +1,86 @@
+[package]
+name = "meeting-record-app"
+version = "1.0.0"
+description = "Local-first meeting recorder (v1.0: Windows, audio-only)."
+authors = ["MeetingRecordApp"]
+edition = "2021"
+rust-version = "1.77"
+
+# The lib + bin split is the Tauri 2 convention: the binary is a thin shim
+# that calls into the library's `run()`, so integration tests and the mobile
+# entry points can share the same crate.
+[lib]
+name = "meeting_record_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "meeting-record-app"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
+
+# Serialization / domain types
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async runtime + HTTP (AI providers, Ollama, model downloads)
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+# Object-safe async trait used by the `AiProvider` abstraction (ai/provider.rs
+# + every provider impl). Without this the ai module fails to compile (E0432).
+async-trait = "0.1"
+
+# Storage
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Audio
+cpal = "0.15"
+hound = "3.5"
+
+# Secrets / identity / errors
+keyring = "3"
+uuid = { version = "1", features = ["v4", "serde"] }
+anyhow = "1"
+thiserror = "2"
+
+# --- Optional, feature-gated native deps -------------------------------------
+# whisper.cpp Rust binding. Native lib is heavy; keep it behind a feature so
+# the crate builds without the C++ toolchain / model present.
+whisper-rs = { version = "0.13", optional = true }
+
+# sherpa-onnx Rust binding for basic diarization (segmentation + embedding).
+# Crate name on crates.io is `sherpa-rs`; feature-gated for the same reason.
+sherpa-rs = { version = "0.6", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+# System audio loopback (v1.0: Windows only).
+wasapi = "0.15"
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[features]
+# By default the crate compiles WITHOUT the heavy native ML libs so that
+# `cargo build` works on a fresh machine (and in CI without models).
+default = []
+whisper = ["dep:whisper-rs"]
+diarize = ["dep:sherpa-rs"]
+# Convenience meta-feature to turn the full transcription pipeline on.
+full = ["whisper", "diarize"]
+
+[profile.release]
+# Tauri default: smaller, faster-to-ship binaries.
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
