@@ -23,6 +23,7 @@ pub mod diarization;
 pub mod model;
 pub mod processor;
 pub mod whisper;
+pub mod worker;
 
 use std::path::PathBuf;
 

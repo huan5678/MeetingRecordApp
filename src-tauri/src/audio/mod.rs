@@ -20,6 +20,7 @@
 //! everything around them is testable, but the capture itself can only be
 //! verified on a machine with the right devices (Windows, for loopback).
 
+pub mod live;
 pub mod microphone;
 pub mod mixer;
 pub mod recorder;

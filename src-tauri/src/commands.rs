@@ -33,12 +33,17 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::ai::{self, keychain};
+use crate::audio::live::{self, LiveConfig, LiveHandle};
+use crate::audio::microphone::MicSelection;
+use crate::audio::recorder::RecorderConfig;
+use crate::audio::system_audio::LoopbackSelection;
 use crate::export::{self, ExportFormat};
 use crate::models::{
-    AiProviderKind, MediaFile, Meeting, MeetingStatus, Summary, SummaryType, TranscriptSegment,
+    AiProviderKind, MediaFile, MediaFileType, Meeting, MeetingStatus, Summary, SummaryType,
+    TranscriptSegment,
 };
 use crate::storage::{self, search, Database, FileStore};
 
@@ -82,12 +87,28 @@ pub struct RecordingState {
     pub system_level: f32,
 }
 
-/// Everything a command needs: the database, the recordings file store, and the
-/// live recording state. Tauri hands each command a `State<AppState>`.
+/// Live per-meeting transcription progress, written by the transcription worker
+/// thread and read by `get_transcription_status` (the frontend polls it).
+#[derive(Debug, Clone)]
+pub struct TranscriptionProgressEntry {
+    pub stage: String,
+    pub fraction: f32,
+    pub message: Option<String>,
+}
+
+/// Everything a command needs: the database, the recordings file store, the
+/// live recording state, the active capture session (if any), and the
+/// transcription progress map. Tauri hands each command a `State<AppState>`.
 pub struct AppState {
     pub db: Mutex<Database>,
     pub files: FileStore,
     pub recording: Mutex<RecordingState>,
+    /// The running capture session, present only between start and stop. Holds
+    /// only `Send + Sync` control handles (the `!Send` audio streams live on the
+    /// capture thread — see [`crate::audio::live`]).
+    pub session: Mutex<Option<LiveHandle>>,
+    /// Latest transcription progress per meeting id.
+    pub transcription: Mutex<std::collections::HashMap<String, TranscriptionProgressEntry>>,
 }
 
 impl AppState {
@@ -102,6 +123,8 @@ impl AppState {
             db: Mutex::new(db),
             files,
             recording: Mutex::new(RecordingState::default()),
+            session: Mutex::new(None),
+            transcription: Mutex::new(std::collections::HashMap::new()),
         })
     }
 }
@@ -212,8 +235,8 @@ pub fn start_recording(
     }
     state.files.ensure_meeting_dir(&meeting_id).map_err(err)?;
 
-    // Persist the requested capture config so the (Windows) capture wiring can
-    // pick it up; harmless on the dev Mac.
+    // Persist the requested capture config so the capture wiring + settings UI
+    // remember it.
     {
         let db = lock_db(&state)?;
         if let Some(dev) = &mic_device_id {
@@ -222,6 +245,42 @@ pub fn start_recording(
         db.set_setting("last_capture_system", &system_audio.to_string())
             .map_err(err)?;
     }
+
+    // Start the live capture session on its own thread: microphone via `cpal`,
+    // system audio via WASAPI loopback on Windows (mic-only fallback elsewhere).
+    let wav_path = state
+        .files
+        .media_path(&meeting_id, "recording.wav")
+        .map_err(err)?;
+    let mic = MicSelection {
+        // device ids from `list_audio_devices` are "input:<name>"; strip the tag.
+        device_name: mic_device_id
+            .as_deref()
+            .map(|d| d.strip_prefix("input:").unwrap_or(d).to_string()),
+        preferred_rate: None,
+    };
+    let live_cfg = LiveConfig {
+        mic,
+        loopback: LoopbackSelection::default(),
+        recorder: RecorderConfig {
+            capture_system: system_audio,
+            capture_microphone: true,
+            ..Default::default()
+        },
+        wav_path,
+    };
+    let handle = match live::start_session(live_cfg) {
+        Ok(h) => h,
+        Err(e) => {
+            // Mark the just-created meeting as errored so the failed attempt is
+            // visible rather than stuck "recording".
+            if let Ok(db) = state.db.lock() {
+                let _ = db.set_meeting_status(&meeting_id, MeetingStatus::Error);
+            }
+            return Err(format!("failed to start capture: {e}"));
+        }
+    };
+    *state.session.lock().map_err(|_| "session lock poisoned")? = Some(handle);
 
     let mut rec = state.recording.lock().map_err(|_| "recording lock poisoned")?;
     rec.phase = Some(RecordingPhase::Recording);
@@ -237,28 +296,78 @@ pub fn start_recording(
 /// and return its id. The transcription pipeline is kicked off separately by
 /// the frontend via [`retranscribe_meeting`] (or auto, in the Integrate wiring).
 #[tauri::command]
-pub fn stop_recording(state: State<'_, AppState>) -> Result<String, String> {
-    let meeting_id = {
+pub fn stop_recording(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+    let id = {
         let mut rec = state.recording.lock().map_err(|_| "recording lock poisoned")?;
         let id = rec
             .meeting_id
             .clone()
             .ok_or_else(|| "no active recording to stop".to_string())?;
         rec.phase = Some(RecordingPhase::Idle);
-        let elapsed = rec.elapsed_seconds;
         rec.meeting_id = None;
         rec.elapsed_seconds = 0;
-        (id, elapsed)
+        id
     };
-    let (id, elapsed) = meeting_id;
 
-    let db = lock_db(&state)?;
-    if let Some(mut m) = db.get_meeting(&id).map_err(err)? {
-        m.end_time = Some(now_iso8601());
-        m.duration_seconds = Some(elapsed);
-        m.status = MeetingStatus::Transcribing;
-        db.update_meeting(&m).map_err(err)?;
+    // Stop the capture thread and collect the finished recording.
+    let session = state
+        .session
+        .lock()
+        .map_err(|_| "session lock poisoned")?
+        .take();
+
+    let mut wav_for_transcription: Option<PathBuf> = None;
+    let mut duration_seconds: i64 = 0;
+
+    if let Some(handle) = session {
+        match handle.stop() {
+            Ok(result) => {
+                duration_seconds = (result.duration_ms / 1000) as i64;
+                let size = std::fs::metadata(&result.wav_path)
+                    .map(|m| m.len() as i64)
+                    .ok();
+                let media = MediaFile {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    meeting_id: id.clone(),
+                    file_type: MediaFileType::Audio,
+                    file_path: result.wav_path.to_string_lossy().into_owned(),
+                    file_size_bytes: size,
+                    format: Some("wav".into()),
+                    duration_seconds: Some(duration_seconds),
+                    created_at: String::new(),
+                };
+                if let Ok(db) = state.db.lock() {
+                    let _ = db.insert_media_file(&media);
+                }
+                wav_for_transcription = Some(result.wav_path);
+            }
+            Err(e) => {
+                if let Ok(db) = state.db.lock() {
+                    let _ = db.set_meeting_status(&id, MeetingStatus::Error);
+                }
+                return Err(format!("failed to finalize recording: {e}"));
+            }
+        }
     }
+
+    // Finalise the meeting row with the authoritative (frame-derived) duration.
+    {
+        let db = lock_db(&state)?;
+        if let Some(mut m) = db.get_meeting(&id).map_err(err)? {
+            m.end_time = Some(now_iso8601());
+            m.duration_seconds = Some(duration_seconds);
+            m.status = MeetingStatus::Transcribing;
+            db.update_meeting(&m).map_err(err)?;
+        }
+    }
+
+    // Auto-transcribe. Real with `--features whisper` + a cached model; otherwise
+    // the worker reports the feature is disabled and flips the meeting to Error.
+    if let Some(wav) = wav_for_transcription {
+        let (model_id, diarize) = transcription_settings(&state);
+        crate::transcription::worker::spawn_transcription(app, id.clone(), wav, model_id, diarize);
+    }
+
     Ok(id)
 }
 
@@ -268,6 +377,11 @@ pub fn pause_recording(state: State<'_, AppState>) -> Result<(), String> {
     match rec.phase {
         Some(RecordingPhase::Recording) => {
             rec.phase = Some(RecordingPhase::Paused);
+            if let Ok(s) = state.session.lock() {
+                if let Some(h) = s.as_ref() {
+                    h.pause();
+                }
+            }
             Ok(())
         }
         other => Err(format!("cannot pause from {other:?}")),
@@ -280,6 +394,11 @@ pub fn resume_recording(state: State<'_, AppState>) -> Result<(), String> {
     match rec.phase {
         Some(RecordingPhase::Paused) => {
             rec.phase = Some(RecordingPhase::Recording);
+            if let Ok(s) = state.session.lock() {
+                if let Some(h) = s.as_ref() {
+                    h.resume();
+                }
+            }
             Ok(())
         }
         other => Err(format!("cannot resume from {other:?}")),
@@ -290,12 +409,20 @@ pub fn resume_recording(state: State<'_, AppState>) -> Result<(), String> {
 pub fn get_recording_status(state: State<'_, AppState>) -> Result<RecordingStatusDto, String> {
     let rec = state.recording.lock().map_err(|_| "recording lock poisoned")?;
     let phase = rec.phase.unwrap_or(RecordingPhase::Idle);
+    // Prefer the authoritative duration + live levels from the running session.
+    let (elapsed_seconds, mic_level, system_level) = match state.session.lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(h) => (h.duration_seconds(), h.mic_level(), h.system_level()),
+            None => (rec.elapsed_seconds, rec.mic_level, rec.system_level),
+        },
+        Err(_) => (rec.elapsed_seconds, rec.mic_level, rec.system_level),
+    };
     Ok(RecordingStatusDto {
         state: phase.as_dto(),
         meeting_id: rec.meeting_id.clone(),
-        elapsed_seconds: rec.elapsed_seconds,
-        mic_level: rec.mic_level,
-        system_level: rec.system_level,
+        elapsed_seconds,
+        mic_level,
+        system_level,
     })
 }
 
@@ -409,7 +536,7 @@ pub fn search_transcripts(
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptionStatusDto {
     pub meeting_id: String,
-    pub stage: &'static str,
+    pub stage: String,
     pub progress: f32,
     pub message: Option<String>,
 }
@@ -422,6 +549,18 @@ pub fn get_transcription_status(
     state: State<'_, AppState>,
     meeting_id: String,
 ) -> Result<TranscriptionStatusDto, String> {
+    // Prefer live, per-stage progress from the worker thread if present.
+    if let Ok(map) = state.transcription.lock() {
+        if let Some(entry) = map.get(&meeting_id) {
+            return Ok(TranscriptionStatusDto {
+                meeting_id,
+                stage: entry.stage.clone(),
+                progress: entry.fraction,
+                message: entry.message.clone(),
+            });
+        }
+    }
+    // Otherwise derive a coarse state from the stored meeting status.
     let db = lock_db(&state)?;
     let m = db
         .get_meeting(&meeting_id)
@@ -435,7 +574,7 @@ pub fn get_transcription_status(
     };
     Ok(TranscriptionStatusDto {
         meeting_id,
-        stage,
+        stage: stage.to_string(),
         progress,
         message: None,
     })
@@ -447,24 +586,39 @@ pub fn get_transcription_status(
 /// build. The DB bookkeeping (status flip) is real either way.
 #[tauri::command]
 pub fn retranscribe_meeting(
+    app: AppHandle,
     state: State<'_, AppState>,
     meeting_id: String,
 ) -> Result<(), String> {
+    // Resolve the recorded audio file; its absence is a real, reportable error.
+    let media = {
+        let db = lock_db(&state)?;
+        db.list_media_files(&meeting_id).map_err(err)?
+    };
+    let audio = match media
+        .into_iter()
+        .find(|m| m.file_type == MediaFileType::Audio)
+    {
+        Some(a) => a,
+        None => {
+            let db = lock_db(&state)?;
+            db.set_meeting_status(&meeting_id, MeetingStatus::Error)
+                .map_err(err)?;
+            return Err(format!("no audio file recorded for meeting {meeting_id}"));
+        }
+    };
+    let wav_path = PathBuf::from(audio.file_path);
+
     {
         let db = lock_db(&state)?;
         db.set_meeting_status(&meeting_id, MeetingStatus::Transcribing)
             .map_err(err)?;
     }
-    // The actual pipeline (model download + whisper + diarization) is driven by
-    // the Integrate phase on a worker thread so it can stream `Progress` events
-    // without blocking the IPC thread. Here we only validate that a usable audio
-    // file exists; absence is a real, reportable error.
-    let db = lock_db(&state)?;
-    let media = db.list_media_files(&meeting_id).map_err(err)?;
-    if media.is_empty() {
-        db.set_meeting_status(&meeting_id, MeetingStatus::Error).map_err(err)?;
-        return Err(format!("no audio file recorded for meeting {meeting_id}"));
-    }
+
+    // Drive the real pipeline (model + whisper + diarization) on a worker thread
+    // so it can stream progress without blocking the IPC thread.
+    let (model_id, diarize) = transcription_settings(&state);
+    crate::transcription::worker::spawn_transcription(app, meeting_id, wav_path, model_id, diarize);
     Ok(())
 }
 
@@ -783,10 +937,30 @@ fn join_transcript(segments: &[TranscriptSegment]) -> String {
         .join("\n")
 }
 
+/// Read the user's transcription preferences from settings, with sane defaults:
+/// whisper model `small` (PRD §4.5) and diarization on.
+fn transcription_settings(state: &State<'_, AppState>) -> (String, bool) {
+    let Ok(db) = state.db.lock() else {
+        return ("small".to_string(), true);
+    };
+    let model = db
+        .get_setting("whisper_model")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "small".to_string());
+    let diarize = db
+        .get_setting("diarize")
+        .ok()
+        .flatten()
+        .map(|v| v != "false")
+        .unwrap_or(true);
+    (model, diarize)
+}
+
 /// Current UTC timestamp as the SQLite `DATETIME` text form (`YYYY-MM-DD
 /// HH:MM:SS`). Kept dependency-free (no chrono) by formatting from
 /// `SystemTime` — good enough for ordering + display.
-fn now_iso8601() -> String {
+pub(crate) fn now_iso8601() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
