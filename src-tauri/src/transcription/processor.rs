@@ -161,6 +161,9 @@ impl Default for ProcessorOptions {
 }
 
 /// Drives the WAV → transcript pipeline.
+// Both fields are only read by the `whisper`-gated pipeline; on default builds
+// they're constructed but unused.
+#[cfg_attr(not(feature = "whisper"), allow(dead_code))]
 pub struct Processor {
     model_manager: ModelManager,
     accountant: ProgressAccountant,
