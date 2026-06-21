@@ -142,25 +142,38 @@ fn run(app: AppHandle, meeting_id: String, wav_path: PathBuf, model_id: String, 
         }
         Err(e) => {
             let message = e.to_string();
+            // A build without the `whisper` feature is a capability gap, not a
+            // failed recording: the audio is fine, there's just no transcript.
+            // Mark such meetings Completed so they don't show as errors.
+            let feature_off = matches!(e, super::TranscriptionError::FeatureDisabled(_));
+            let (status, stage) = if feature_off {
+                (MeetingStatus::Completed, "done")
+            } else {
+                (MeetingStatus::Error, "error")
+            };
             if let Ok(db) = state.db.lock() {
-                let _ = db.set_meeting_status(&meeting_id, MeetingStatus::Error);
+                let _ = db.set_meeting_status(&meeting_id, status);
             }
             if let Ok(mut map) = state.transcription.lock() {
                 map.insert(
                     meeting_id.clone(),
                     TranscriptionProgressEntry {
-                        stage: "error".to_string(),
-                        fraction: 0.0,
+                        stage: stage.to_string(),
+                        fraction: if feature_off { 1.0 } else { 0.0 },
                         message: Some(message.clone()),
                     },
                 );
             }
             let _ = app.emit(
-                "transcription://error",
+                if feature_off {
+                    "transcription://done"
+                } else {
+                    "transcription://error"
+                },
                 ProgressEvent {
                     meeting_id,
                     stage: ProgressStage::Done,
-                    fraction: 0.0,
+                    fraction: if feature_off { 1.0 } else { 0.0 },
                     message,
                 },
             );
