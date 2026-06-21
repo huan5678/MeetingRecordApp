@@ -21,9 +21,12 @@
 
 use crate::models::TranscriptSegment;
 
+#[cfg(feature = "whisper")]
 use super::diarization::{assign_speakers, Diarizer};
 use super::model::{ModelInfo, ModelManager};
-use super::whisper::{RawSegment, WhisperOptions, WhisperTranscriber, WHISPER_SAMPLE_RATE};
+use super::whisper::{RawSegment, WhisperOptions, WHISPER_SAMPLE_RATE};
+#[cfg(feature = "whisper")]
+use super::whisper::WhisperTranscriber;
 use super::{Progress, ProgressStage, Result, TranscriptionError};
 
 /// Relative weights of each pipeline stage in the overall progress bar. They

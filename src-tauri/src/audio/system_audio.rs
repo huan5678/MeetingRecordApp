@@ -164,7 +164,9 @@ mod platform {
                             .map_err(|e| AudioError::Stream(e.to_string()))?;
 
                         let block_align = desired.get_blockalign() as usize;
-                        let mut raw: Vec<u8> = Vec::with_capacity(block_align * 1024);
+                        // `wasapi`'s read_from_device_to_deque wants a VecDeque.
+                        let mut raw: std::collections::VecDeque<u8> =
+                            std::collections::VecDeque::with_capacity(block_align * 1024);
 
                         while !stop_thread.load(Ordering::Relaxed) {
                             // Wait (with timeout) for the device to signal data.
@@ -181,9 +183,11 @@ mod platform {
                             if raw.is_empty() {
                                 continue;
                             }
+                            // VecDeque isn't a contiguous slice; flatten it once.
+                            let bytes = raw.make_contiguous();
                             let samples = match sample_type {
-                                SampleType::Float => bytes_to_f32_le(&raw),
-                                SampleType::Int => bytes_i16_to_f32_le(&raw),
+                                SampleType::Float => bytes_to_f32_le(bytes),
+                                SampleType::Int => bytes_i16_to_f32_le(bytes),
                             };
                             if sink
                                 .send(AudioChunk::new(Source::System, format, samples))
