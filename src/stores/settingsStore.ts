@@ -11,13 +11,16 @@ import { create } from "zustand";
 import {
   AI_PROVIDERS,
   DEFAULT_AI_PROVIDER,
+  DEFAULT_GEMINI_MODEL,
   DEFAULT_OLLAMA_ENDPOINT,
   DEFAULT_THEME,
+  DEFAULT_TRANSCRIPTION_ENGINE,
   DEFAULT_WHISPER_MODEL,
   PROVIDER_META,
   SETTINGS_KEYS,
   type AiProvider,
   type Theme,
+  type TranscriptionEngine,
   type TranscriptionLanguage,
   type WhisperModel,
 } from "@/lib/constants";
@@ -38,6 +41,8 @@ export interface SettingsState {
   whisperModel: WhisperModel;
   language: TranscriptionLanguage;
   diarizationEnabled: boolean;
+  transcriptionEngine: TranscriptionEngine;
+  geminiModel: string;
   // ai
   aiProvider: AiProvider;
   aiModel: string;
@@ -56,6 +61,8 @@ const DEFAULTS: SettingsState = {
   whisperModel: DEFAULT_WHISPER_MODEL,
   language: "zh",
   diarizationEnabled: true,
+  transcriptionEngine: DEFAULT_TRANSCRIPTION_ENGINE,
+  geminiModel: DEFAULT_GEMINI_MODEL,
   aiProvider: DEFAULT_AI_PROVIDER,
   aiModel: PROVIDER_META[DEFAULT_AI_PROVIDER].models[0],
   ollamaEndpoint: DEFAULT_OLLAMA_ENDPOINT,
@@ -74,6 +81,8 @@ const FIELD_KEY: Partial<Record<keyof SettingsState, string>> = {
   whisperModel: SETTINGS_KEYS.WhisperModel,
   language: SETTINGS_KEYS.Language,
   diarizationEnabled: SETTINGS_KEYS.DiarizationEnabled,
+  transcriptionEngine: SETTINGS_KEYS.TranscriptionEngine,
+  geminiModel: SETTINGS_KEYS.GeminiModel,
   aiProvider: SETTINGS_KEYS.AiProvider,
   aiModel: SETTINGS_KEYS.AiModel,
   ollamaEndpoint: SETTINGS_KEYS.OllamaEndpoint,

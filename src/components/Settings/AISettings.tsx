@@ -13,10 +13,13 @@ import { Field, Row, Toggle } from "@/components/Settings/controls";
 import {
   AI_PROVIDERS,
   DEFAULT_OLLAMA_ENDPOINT,
+  GEMINI_TRANSCRIBE_MODELS,
   PROVIDER_META,
+  TRANSCRIPTION_ENGINES,
   TRANSCRIPTION_LANGUAGES,
   WHISPER_MODELS,
   type AiProvider,
+  type TranscriptionEngine,
   type TranscriptionLanguage,
   type WhisperModel,
 } from "@/lib/constants";
@@ -28,10 +31,14 @@ export function AISettings() {
   const whisperModel = useSettingsStore((s) => s.whisperModel);
   const language = useSettingsStore((s) => s.language);
   const diarizationEnabled = useSettingsStore((s) => s.diarizationEnabled);
+  const transcriptionEngine = useSettingsStore((s) => s.transcriptionEngine);
+  const geminiModel = useSettingsStore((s) => s.geminiModel);
   const setField = useSettingsStore((s) => s.setField);
   const setProvider = useSettingsStore((s) => s.setProvider);
 
   const isCloud = provider !== AI_PROVIDERS.Ollama;
+  // Gemini engine is in play for "gemini" and "auto" (when a key is set).
+  const geminiEngine = transcriptionEngine !== "whisper";
 
   return (
     <div className="space-y-8">
@@ -92,8 +99,52 @@ export function AISettings() {
         </h3>
 
         <Field
+          label="轉錄引擎"
+          hint="Gemini:錄音上傳雲端,一次產生繁中逐字稿(含語者+時間戳)+ 摘要,免本地模型;需 Gemini API key。"
+        >
+          <select
+            value={transcriptionEngine}
+            onChange={(e) =>
+              setField(
+                "transcriptionEngine",
+                e.target.value as TranscriptionEngine,
+              )
+            }
+            className="block w-full rounded-md border border-gray-300 bg-white p-2 text-sm dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+          >
+            {TRANSCRIPTION_ENGINES.map((en) => (
+              <option key={en.id} value={en.id}>
+                {en.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        {geminiEngine && (
+          <>
+            <Field label="Gemini 模型" hint="多模態音訊模型;Flash 系列速度/成本最佳。">
+              <select
+                value={geminiModel}
+                onChange={(e) => setField("geminiModel", e.target.value)}
+                className="block w-full rounded-md border border-gray-300 bg-white p-2 text-sm dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+              >
+                {GEMINI_TRANSCRIBE_MODELS.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <p className="rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+              ⚠️ Gemini 會把整段錄音上傳到 Google 雲端。請在上方 Summarization 把
+              Provider 設為 Gemini 並填入 API key(轉錄與摘要共用同一把 key)。
+            </p>
+          </>
+        )}
+
+        <Field
           label="Whisper model"
-          hint="Default base/small. Larger models are more accurate but slower and bigger."
+          hint="本地引擎(或 Gemini 失敗時的備援)用的模型。"
         >
           <select
             value={whisperModel}

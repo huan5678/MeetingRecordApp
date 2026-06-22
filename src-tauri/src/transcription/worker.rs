@@ -19,8 +19,9 @@ use std::path::PathBuf;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::ai::keychain;
 use crate::commands::{AppState, TranscriptionProgressEntry};
-use crate::models::MeetingStatus;
+use crate::models::{AiProviderKind, MeetingStatus};
 
 use super::model::{default_model, lookup, ModelManager};
 use super::processor::{Processor, ProcessorOptions};
@@ -83,20 +84,186 @@ fn report(
 /// immediately; progress + completion are reported via the app state map and
 /// Tauri events. `model_id` selects the whisper model (falls back to `small` if
 /// unknown); `diarize` toggles speaker labelling.
+/// Per-meeting transcription request: which engine + the engine-specific config.
+pub struct TranscriptionRequest {
+    /// Local whisper model id (used when the whisper engine runs).
+    pub model_id: String,
+    pub diarize: bool,
+    /// Forced language ("zh"/"en"/…) or `None` for auto-detect.
+    pub language: Option<String>,
+    /// `"auto"` (Gemini if an API key is set, else whisper) | `"gemini"` | `"whisper"`.
+    pub engine: String,
+    /// Multimodal model id for the Gemini engine.
+    pub gemini_model: String,
+}
+
 pub fn spawn_transcription(
     app: AppHandle,
     meeting_id: String,
     wav_path: PathBuf,
-    model_id: String,
-    diarize: bool,
-    language: Option<String>,
+    req: TranscriptionRequest,
 ) {
     let _ = std::thread::Builder::new()
         .name("transcription".into())
-        .spawn(move || run(app, meeting_id, wav_path, model_id, diarize, language));
+        .spawn(move || run(app, meeting_id, wav_path, req));
 }
 
-fn run(
+/// Dispatch to the Gemini multimodal engine (primary, when a key is present) or
+/// the local whisper engine. On a Gemini failure with the `whisper` feature
+/// built, fall through to whisper as a backup.
+fn run(app: AppHandle, meeting_id: String, wav_path: PathBuf, req: TranscriptionRequest) {
+    let has_key = keychain::get_api_key(AiProviderKind::Gemini)
+        .ok()
+        .flatten()
+        .is_some();
+    let use_gemini = match req.engine.as_str() {
+        "gemini" => true,
+        "whisper" => false,
+        _ => has_key, // "auto"
+    };
+
+    if use_gemini {
+        let state = app.state::<AppState>();
+        if !has_key {
+            finish_error(
+                &app,
+                &state,
+                &meeting_id,
+                "已選 Gemini 引擎,但尚未設定 Gemini API key(Settings → AI)。".into(),
+            );
+            return;
+        }
+        match try_gemini(&app, &state, &meeting_id, &wav_path, &req) {
+            Ok(()) => return,
+            Err(msg) => {
+                #[cfg(feature = "whisper")]
+                report(
+                    &app,
+                    &state,
+                    &meeting_id,
+                    ProgressStage::PreparingModel,
+                    0.0,
+                    format!("Gemini 失敗,改用本地 whisper:{msg}"),
+                );
+                #[cfg(not(feature = "whisper"))]
+                {
+                    finish_error(
+                        &app,
+                        &state,
+                        &meeting_id,
+                        format!("Gemini transcription failed: {msg}"),
+                    );
+                    return;
+                }
+            }
+        }
+        // `state` (borrowing `app`) drops here, before `app` moves into run_whisper.
+    }
+
+    run_whisper(app, meeting_id, wav_path, req.model_id, req.diarize, req.language);
+}
+
+/// Gemini multimodal engine: upload the WAV, get transcript + summary in one
+/// call, persist both, mark the meeting Completed. Returns `Err(msg)` on any
+/// failure so the caller can fall back to whisper.
+fn try_gemini(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    meeting_id: &str,
+    wav_path: &PathBuf,
+    req: &TranscriptionRequest,
+) -> std::result::Result<(), String> {
+    report(
+        app,
+        state,
+        meeting_id,
+        ProgressStage::PreparingModel,
+        0.05,
+        "上傳音訊到 Gemini…".into(),
+    );
+
+    // Summary template follows the meeting type (same as generate_summary).
+    let template = {
+        let db = state.db.lock().map_err(|_| "database lock poisoned".to_string())?;
+        let mt = db
+            .get_meeting(meeting_id)
+            .ok()
+            .flatten()
+            .and_then(|m| m.meeting_type);
+        crate::ai::SummaryTemplate::for_meeting_type(mt)
+    };
+    let created_at = crate::commands::now_iso8601();
+
+    report(
+        app,
+        state,
+        meeting_id,
+        ProgressStage::Transcribing,
+        0.3,
+        "Gemini 轉錄 + 摘要中…".into(),
+    );
+
+    // The worker is a std::thread with no ambient runtime — like download_model,
+    // spin a throwaway current-thread runtime for the async upload + request.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let res = rt
+        .block_on(crate::ai::gemini_audio::transcribe_and_summarize(
+            wav_path,
+            meeting_id,
+            &created_at,
+            template,
+            &req.gemini_model,
+        ))
+        .map_err(|e| e.to_string())?;
+
+    let n = res.segments.len();
+    if let Ok(db) = state.db.lock() {
+        let _ = db.insert_transcript_segments(&res.segments);
+        let summary = crate::models::Summary {
+            id: uuid::Uuid::new_v4().to_string(),
+            meeting_id: meeting_id.to_string(),
+            summary_type: crate::models::SummaryType::Auto,
+            content: res.summary.content,
+            action_items: res.summary.action_items,
+            key_decisions: res.summary.key_decisions,
+            prompt_used: None,
+            ai_provider: Some(res.summary.provider),
+            ai_model: Some(res.summary.model),
+            tokens_used: res.summary.tokens_used,
+            created_at: String::new(),
+        };
+        let _ = db.insert_summary(&summary);
+        let _ = db.set_meeting_status(meeting_id, MeetingStatus::Completed);
+    }
+
+    let msg = format!("{n} segments + summary (Gemini)");
+    if let Ok(mut map) = state.transcription.lock() {
+        map.insert(
+            meeting_id.to_string(),
+            TranscriptionProgressEntry {
+                stage: "done".to_string(),
+                fraction: 1.0,
+                message: Some(msg.clone()),
+            },
+        );
+    }
+    let _ = app.emit(
+        "transcription://done",
+        ProgressEvent {
+            meeting_id: meeting_id.to_string(),
+            stage: ProgressStage::Done,
+            fraction: 1.0,
+            message: msg,
+        },
+    );
+    Ok(())
+}
+
+/// Run the local whisper pipeline (the original transcription path).
+fn run_whisper(
     app: AppHandle,
     meeting_id: String,
     wav_path: PathBuf,
@@ -265,7 +432,6 @@ fn download_model(
 }
 
 /// Terminal failure: mark the meeting errored + report the message.
-#[cfg(feature = "whisper")]
 fn finish_error(app: &AppHandle, state: &State<'_, AppState>, meeting_id: &str, message: String) {
     if let Ok(db) = state.db.lock() {
         let _ = db.set_meeting_status(meeting_id, MeetingStatus::Error);

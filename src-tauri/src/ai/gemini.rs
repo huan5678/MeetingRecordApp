@@ -47,6 +47,12 @@ impl GeminiProvider {
                 input_per_mtok: 1.25,
                 output_per_mtok: 5.00,
             },
+            // gemini-3.5-flash is the multimodal default for transcription; this
+            // (Flash-tier) price is a rough estimate for the text cost hook.
+            "gemini-3.5-flash" => ModelPricing {
+                input_per_mtok: 0.10,
+                output_per_mtok: 0.40,
+            },
             "gemini-1.5-flash" => ModelPricing {
                 input_per_mtok: 0.075,
                 output_per_mtok: 0.30,
@@ -203,6 +209,7 @@ impl AiProvider for GeminiProvider {
 
     fn models(&self) -> Vec<String> {
         vec![
+            "gemini-3.5-flash".to_string(),
             "gemini-1.5-flash".to_string(),
             "gemini-1.5-pro".to_string(),
         ]

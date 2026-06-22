@@ -364,15 +364,8 @@ pub fn stop_recording(app: AppHandle, state: State<'_, AppState>) -> Result<Stri
     // Auto-transcribe. Real with `--features whisper` + a cached model; otherwise
     // the worker reports the feature is disabled and flips the meeting to Error.
     if let Some(wav) = wav_for_transcription {
-        let (model_id, diarize, language) = transcription_settings(&state);
-        crate::transcription::worker::spawn_transcription(
-            app,
-            id.clone(),
-            wav,
-            model_id,
-            diarize,
-            language,
-        );
+        let req = transcription_settings(&state);
+        crate::transcription::worker::spawn_transcription(app, id.clone(), wav, req);
     }
 
     Ok(id)
@@ -622,17 +615,10 @@ pub fn retranscribe_meeting(
             .map_err(err)?;
     }
 
-    // Drive the real pipeline (model + whisper + diarization) on a worker thread
-    // so it can stream progress without blocking the IPC thread.
-    let (model_id, diarize, language) = transcription_settings(&state);
-    crate::transcription::worker::spawn_transcription(
-        app,
-        meeting_id,
-        wav_path,
-        model_id,
-        diarize,
-        language,
-    );
+    // Drive transcription on a worker thread (Gemini multimodal or local whisper,
+    // per settings) so it can stream progress without blocking the IPC thread.
+    let req = transcription_settings(&state);
+    crate::transcription::worker::spawn_transcription(app, meeting_id, wav_path, req);
     Ok(())
 }
 
@@ -956,12 +942,21 @@ fn join_transcript(segments: &[TranscriptSegment]) -> String {
 /// (`zh`) by default — auto-detect mis-fires on short clips, so we bias to the
 /// user's primary language. A stored `whisper_language` ("en"/"ja"/"auto"/…)
 /// overrides; "auto"/"" means let whisper detect.
-fn transcription_settings(state: &State<'_, AppState>) -> (String, bool, Option<String>) {
+fn transcription_settings(
+    state: &State<'_, AppState>,
+) -> crate::transcription::worker::TranscriptionRequest {
+    use crate::transcription::worker::TranscriptionRequest;
     let Ok(db) = state.db.lock() else {
-        return ("belle-turbo-zh".to_string(), true, Some("zh".to_string()));
+        return TranscriptionRequest {
+            model_id: "belle-turbo-zh".to_string(),
+            diarize: true,
+            language: Some("zh".to_string()),
+            engine: "auto".to_string(),
+            gemini_model: "gemini-3.5-flash".to_string(),
+        };
     };
     // Keys MUST match src/lib/constants.ts SETTINGS_KEYS (the UI writes these).
-    let model = db
+    let model_id = db
         .get_setting("transcription.whisper_model")
         .ok()
         .flatten()
@@ -977,7 +972,26 @@ fn transcription_settings(state: &State<'_, AppState>) -> (String, bool, Option<
         Some(l) => Some(l),
         None => Some("zh".to_string()),
     };
-    (model, diarize, language)
+    // Engine: "auto" (Gemini if a key is set, else whisper) | "gemini" | "whisper".
+    let engine = db
+        .get_setting("transcription.engine")
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "auto".to_string());
+    let gemini_model = db
+        .get_setting("transcription.gemini_model")
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "gemini-3.5-flash".to_string());
+    TranscriptionRequest {
+        model_id,
+        diarize,
+        language,
+        engine,
+        gemini_model,
+    }
 }
 
 /// Current UTC timestamp as the SQLite `DATETIME` text form (`YYYY-MM-DD

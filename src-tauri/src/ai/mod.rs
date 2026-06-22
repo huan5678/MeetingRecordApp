@@ -10,6 +10,7 @@
 
 pub mod claude;
 pub mod gemini;
+pub mod gemini_audio;
 pub mod keychain;
 pub mod ollama;
 pub mod openai;

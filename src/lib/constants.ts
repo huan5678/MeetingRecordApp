@@ -123,6 +123,27 @@ export const WHISPER_MODELS = [
 export type WhisperModel = (typeof WHISPER_MODELS)[number]["id"];
 export const DEFAULT_WHISPER_MODEL: WhisperModel = "belle-turbo-zh";
 
+/**
+ * Transcription engine. `auto` = Gemini cloud when a Gemini API key is set,
+ * else local whisper. Gemini does transcript + summary in one multimodal call
+ * (Traditional Chinese, speaker labels, timestamps) and needs no local model.
+ */
+export const TRANSCRIPTION_ENGINES = [
+  { id: "auto", label: "自動(有 Gemini key 走雲端,否則本地)" },
+  { id: "gemini", label: "Gemini 雲端(多模態)" },
+  { id: "whisper", label: "本地 whisper" },
+] as const;
+export type TranscriptionEngine = (typeof TRANSCRIPTION_ENGINES)[number]["id"];
+export const DEFAULT_TRANSCRIPTION_ENGINE: TranscriptionEngine = "auto";
+
+/** Gemini multimodal models usable for audio transcription (audio-capable). */
+export const GEMINI_TRANSCRIBE_MODELS = [
+  { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash(推薦,stable)" },
+  { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash(便宜)" },
+  { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite(最省)" },
+] as const;
+export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash";
+
 /** Transcription languages whisper supports for our target users (PRD §3.3). */
 export const TRANSCRIPTION_LANGUAGES = [
   { id: "auto", label: "Auto-detect" },
@@ -159,6 +180,8 @@ export const SETTINGS_KEYS = {
   WhisperModel: "transcription.whisper_model",
   Language: "transcription.language",
   DiarizationEnabled: "transcription.diarization_enabled",
+  TranscriptionEngine: "transcription.engine",
+  GeminiModel: "transcription.gemini_model",
   AiProvider: "ai.provider",
   AiModel: "ai.model",
   OllamaEndpoint: "ai.ollama_endpoint",
