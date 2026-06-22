@@ -28,7 +28,7 @@ const STATUS_BADGE: Record<MeetingStatus, string> = {
 };
 
 export function MeetingList() {
-  const { meetings, loading, error, search, refresh } = useMeetings();
+  const { meetings, loading, error, search, refresh, remove } = useMeetings();
   const openMeeting = useRecordingStore((s) => s.openMeeting);
   const recState = useRecordingStore((s) => s.state);
   const [query, setQuery] = useState("");
@@ -92,7 +92,21 @@ export function MeetingList() {
 
       <ul className="flex flex-col gap-2">
         {meetings.map((m) => (
-          <MeetingRow key={m.id} meeting={m} onOpen={() => openMeeting(m.id)} />
+          <MeetingRow
+            key={m.id}
+            meeting={m}
+            onOpen={() => openMeeting(m.id)}
+            onDelete={() => {
+              const name = m.title ?? "Untitled meeting";
+              if (
+                window.confirm(
+                  `Delete “${name}”? This removes its recording and transcript and cannot be undone.`,
+                )
+              ) {
+                void remove(m.id);
+              }
+            }}
+          />
         ))}
       </ul>
     </div>
@@ -102,16 +116,18 @@ export function MeetingList() {
 function MeetingRow({
   meeting,
   onOpen,
+  onDelete,
 }: {
   meeting: Meeting;
   onOpen: () => void;
+  onDelete: () => void;
 }) {
   return (
-    <li>
+    <li className="flex items-stretch gap-2">
       <button
         type="button"
         onClick={onOpen}
-        className="flex w-full items-center justify-between gap-4 rounded-lg border border-gray-200 bg-white p-4 text-left transition-colors hover:border-blue-400 hover:bg-blue-50/40 dark:border-gray-800 dark:bg-gray-900 dark:hover:border-blue-600 dark:hover:bg-gray-800"
+        className="flex min-w-0 flex-1 items-center justify-between gap-4 rounded-lg border border-gray-200 bg-white p-4 text-left transition-colors hover:border-blue-400 hover:bg-blue-50/40 dark:border-gray-800 dark:bg-gray-900 dark:hover:border-blue-600 dark:hover:bg-gray-800"
       >
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -146,6 +162,15 @@ function MeetingRow({
         >
           {meeting.status}
         </span>
+      </button>
+      <button
+        type="button"
+        onClick={onDelete}
+        aria-label="Delete meeting"
+        title="Delete meeting"
+        className="shrink-0 rounded-lg border border-gray-200 px-3 text-gray-400 transition-colors hover:border-red-300 hover:bg-red-50 hover:text-red-600 dark:border-gray-800 dark:hover:border-red-800 dark:hover:bg-red-900/30 dark:hover:text-red-400"
+      >
+        🗑
       </button>
     </li>
   );
