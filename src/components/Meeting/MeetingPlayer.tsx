@@ -5,6 +5,7 @@
  * skeleton there's no file, so we show a placeholder.
  */
 
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { formatBytes, formatDuration } from "@/lib/format";
 import { isTauri } from "@/lib/tauri";
 import type { MediaFile } from "@/lib/types";
@@ -34,7 +35,7 @@ export function MeetingPlayer({ media }: MeetingPlayerProps) {
         <span>{formatBytes(audio.file_size_bytes)}</span>
       </div>
       {isTauri() ? (
-        <audio controls className="w-full" src={toAssetUrl(audio.file_path)}>
+        <audio controls className="w-full" src={convertFileSrc(audio.file_path)}>
           Your browser does not support audio playback.
         </audio>
       ) : (
@@ -44,12 +45,4 @@ export function MeetingPlayer({ media }: MeetingPlayerProps) {
       )}
     </div>
   );
-}
-
-/** Convert a local path to a Tauri asset URL (lazy import to stay browser-safe). */
-function toAssetUrl(path: string): string {
-  // In the real app, `convertFileSrc` from @tauri-apps/api/core is used; we keep
-  // a synchronous best-effort here to avoid making the component async. The
-  // Integrate phase can swap this for the awaited convertFileSrc if needed.
-  return `asset://localhost/${encodeURIComponent(path)}`;
 }

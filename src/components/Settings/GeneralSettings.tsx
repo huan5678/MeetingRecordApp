@@ -5,8 +5,9 @@
  */
 
 import { useEffect, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { api, type StorageUsageDto } from "@/lib/tauri";
+import { api, isTauri, type StorageUsageDto } from "@/lib/tauri";
 import { Field, Row, Toggle } from "@/components/Settings/controls";
 import { formatBytes } from "@/lib/format";
 import { THEMES, type Theme, SHORTCUTS } from "@/lib/constants";
@@ -65,13 +66,30 @@ export function GeneralSettings() {
       </Row>
 
       <Field label="Storage location" hint="Where recordings are saved.">
-        <input
-          type="text"
-          value={storageDir}
-          placeholder="Default app data folder"
-          onChange={(e) => setField("storageDir", e.target.value)}
-          className="block w-full rounded-md border border-gray-300 bg-white p-2 text-sm dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
-        />
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={storageDir}
+            placeholder="Default app data folder"
+            onChange={(e) => setField("storageDir", e.target.value)}
+            className="block w-full rounded-md border border-gray-300 bg-white p-2 text-sm dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+          />
+          {isTauri() && (
+            <button
+              type="button"
+              onClick={async () => {
+                const dir = await open({
+                  directory: true,
+                  defaultPath: storageDir || undefined,
+                });
+                if (typeof dir === "string") setField("storageDir", dir);
+              }}
+              className="shrink-0 rounded-md border border-gray-300 bg-white px-3 text-sm font-medium hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+            >
+              Browse…
+            </button>
+          )}
+        </div>
       </Field>
 
       <Row label="Storage used">

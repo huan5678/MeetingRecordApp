@@ -3,7 +3,7 @@
  * transcripts), status badges, tags, and a row click that opens the detail view.
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMeetings } from "@/hooks/useMeetings";
 import { useRecordingStore } from "@/stores/recordingStore";
 import { Button } from "@/components/common/Button";
@@ -11,6 +11,7 @@ import { formatDateTime, formatDuration } from "@/lib/format";
 import {
   MEETING_STATUS,
   MEETING_TYPE_LABELS,
+  RECORDING_STATES,
   type MeetingStatus,
 } from "@/lib/constants";
 import type { Meeting } from "@/lib/types";
@@ -29,7 +30,21 @@ const STATUS_BADGE: Record<MeetingStatus, string> = {
 export function MeetingList() {
   const { meetings, loading, error, search, refresh } = useMeetings();
   const openMeeting = useRecordingStore((s) => s.openMeeting);
+  const recState = useRecordingStore((s) => s.state);
   const [query, setQuery] = useState("");
+
+  // A recording just finished (→ idle): its duration/status landed in the DB,
+  // so refetch the list instead of showing the stale in-progress row.
+  const prevRecState = useRef(recState);
+  useEffect(() => {
+    if (
+      prevRecState.current !== RECORDING_STATES.Idle &&
+      recState === RECORDING_STATES.Idle
+    ) {
+      void refresh();
+    }
+    prevRecState.current = recState;
+  }, [recState, refresh]);
 
   return (
     <div className="mx-auto flex h-full w-full max-w-4xl flex-col gap-4 p-6">
