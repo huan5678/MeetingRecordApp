@@ -46,6 +46,21 @@ export function MeetingList() {
     prevRecState.current = recState;
   }, [recState, refresh]);
 
+  // Transcription finishes on a background worker AFTER the list last refetched,
+  // so a row can sit stuck on "transcribing". While any meeting is still
+  // recording/transcribing, poll until it settles (then the effect's deps go
+  // empty-of-pending and the interval is cleared).
+  const hasPending = meetings.some(
+    (m) =>
+      m.status === MEETING_STATUS.Transcribing ||
+      m.status === MEETING_STATUS.Recording,
+  );
+  useEffect(() => {
+    if (!hasPending) return;
+    const id = setInterval(() => void refresh(), 2500);
+    return () => clearInterval(id);
+  }, [hasPending, refresh]);
+
   return (
     <div className="mx-auto flex h-full w-full max-w-4xl flex-col gap-4 p-6">
       <div className="flex items-center gap-3">
