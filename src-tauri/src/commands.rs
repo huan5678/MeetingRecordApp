@@ -952,19 +952,19 @@ fn join_transcript(segments: &[TranscriptSegment]) -> String {
 }
 
 /// Read the user's transcription preferences from settings, with sane defaults:
-/// whisper model `small` (PRD §4.5), diarization on, and **language Chinese**
+/// whisper model `belle-turbo-zh` (Chinese fine-tune), diarization on, **language Chinese**
 /// (`zh`) by default — auto-detect mis-fires on short clips, so we bias to the
 /// user's primary language. A stored `whisper_language` ("en"/"ja"/"auto"/…)
 /// overrides; "auto"/"" means let whisper detect.
 fn transcription_settings(state: &State<'_, AppState>) -> (String, bool, Option<String>) {
     let Ok(db) = state.db.lock() else {
-        return ("small".to_string(), true, Some("zh".to_string()));
+        return ("belle-turbo-zh".to_string(), true, Some("zh".to_string()));
     };
     let model = db
         .get_setting("whisper_model")
         .ok()
         .flatten()
-        .unwrap_or_else(|| "small".to_string());
+        .unwrap_or_else(|| "belle-turbo-zh".to_string());
     let diarize = db
         .get_setting("diarize")
         .ok()

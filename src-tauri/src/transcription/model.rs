@@ -41,9 +41,16 @@ impl ModelInfo {
         cache_dir.join(self.file_name)
     }
 
-    /// Full HTTPS URL to download this model from.
+    /// Full HTTPS URL to download this model from. Fine-tuned models live in
+    /// their own Hugging Face repos, so a `remote_path` that is itself a full
+    /// URL (has a scheme) is used as-is; otherwise it is joined onto the default
+    /// whisper.cpp host.
     pub fn download_url(&self) -> String {
-        format!("{MODEL_HOST}/{}", self.remote_path)
+        if self.remote_path.starts_with("http") {
+            self.remote_path.to_string()
+        } else {
+            format!("{MODEL_HOST}/{}", self.remote_path)
+        }
     }
 }
 
@@ -83,6 +90,18 @@ const REGISTRY: &[ModelInfo] = &[
         file_name: "ggml-medium.bin",
         approx_size_mb: 1500,
         remote_path: "ggml-medium.bin",
+    },
+    // Chinese fine-tune of large-v3-turbo (BELLE). Pre-converted GGML, big
+    // Mandarin accuracy gain over vanilla turbo/small. Default for this app.
+    // NOTE: outputs Simplified Chinese — OpenCC s2twp post-processing (a later
+    // step) is needed for Traditional output.
+    ModelInfo {
+        id: "belle-turbo-zh",
+        label: "中文 Turbo (Belle, 推薦)",
+        file_name: "ggml-belle-large-v3-turbo-zh.bin",
+        approx_size_mb: 1623,
+        remote_path:
+            "https://huggingface.co/BELLE-2/Belle-whisper-large-v3-turbo-zh-ggml/resolve/main/ggml-model.bin",
     },
     ModelInfo {
         id: "large-v3",
@@ -260,9 +279,23 @@ mod tests {
     }
 
     #[test]
-    fn registry_has_all_five_v1_models() {
+    fn registry_lists_expected_models() {
         let ids: Vec<&str> = registry().iter().map(|m| m.id).collect();
-        assert_eq!(ids, vec!["tiny", "base", "small", "medium", "large-v3"]);
+        assert_eq!(
+            ids,
+            vec!["tiny", "base", "small", "medium", "belle-turbo-zh", "large-v3"]
+        );
+    }
+
+    #[test]
+    fn belle_model_uses_its_own_full_url() {
+        let belle = lookup("belle-turbo-zh").unwrap();
+        assert!(belle.download_url().starts_with("https://huggingface.co/BELLE-2/"));
+        // Standard models still join onto the default host.
+        assert_eq!(
+            lookup("small").unwrap().download_url(),
+            format!("{MODEL_HOST}/ggml-small.bin")
+        );
     }
 
     #[test]
