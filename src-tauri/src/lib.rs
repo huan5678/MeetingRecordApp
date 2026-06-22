@@ -84,6 +84,11 @@ pub fn run() {
             // transcription
             commands::get_transcription_status,
             commands::retranscribe_meeting,
+            commands::import_audio_meeting,
+            commands::list_transcript_runs,
+            commands::get_run_segments,
+            commands::delete_transcript_run,
+            commands::delete_summary,
             commands::update_segment,
             // summary
             commands::generate_summary,

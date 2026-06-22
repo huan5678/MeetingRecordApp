@@ -6,6 +6,7 @@
 import type {
   Meeting,
   MediaFile,
+  TranscriptRun,
   TranscriptSegment,
   Summary,
 } from "@/lib/types";
@@ -167,6 +168,18 @@ const MOCK_SUMMARY: Summary = {
   created_at: "2026-06-18T15:31:00Z",
 };
 
+const MOCK_RUNS: TranscriptRun[] = [
+  {
+    id: "run-001",
+    meeting_id: "mtg-001",
+    engine: "gemini",
+    model: "gemini-3.5-flash",
+    language: "zh-TW",
+    created_at: "2026-06-18T15:31:00Z",
+    segment_count: MOCK_SEGMENTS.length,
+  },
+];
+
 export const MOCK_AUDIO_DEVICES: AudioDevice[] = [
   { id: "mic-default", name: "Default Microphone", kind: "input", isDefault: true },
   { id: "mic-usb", name: "Blue Yeti USB", kind: "input", isDefault: false },
@@ -187,6 +200,7 @@ export function MOCK_DETAIL(id: string): MeetingDetailDto {
     meeting,
     media: isRich ? MOCK_MEDIA : [],
     segments: isRich ? MOCK_SEGMENTS : [],
-    summary: isRich ? MOCK_SUMMARY : null,
+    runs: isRich ? MOCK_RUNS : [],
+    summaries: isRich ? [MOCK_SUMMARY] : [],
   };
 }

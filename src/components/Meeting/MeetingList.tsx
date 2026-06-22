@@ -4,9 +4,11 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useMeetings } from "@/hooks/useMeetings";
 import { useRecordingStore } from "@/stores/recordingStore";
 import { Button } from "@/components/common/Button";
+import { api, isTauri } from "@/lib/tauri";
 import { formatDateTime, formatDuration } from "@/lib/format";
 import {
   MEETING_STATUS,
@@ -32,6 +34,31 @@ export function MeetingList() {
   const openMeeting = useRecordingStore((s) => s.openMeeting);
   const recState = useRecordingStore((s) => s.state);
   const [query, setQuery] = useState("");
+  const [importing, setImporting] = useState(false);
+
+  // Import an existing audio file as a new meeting and transcribe it (no
+  // recording). Opens the new meeting so its progress is visible.
+  const importAudio = async () => {
+    if (!isTauri()) return;
+    const picked = await open({
+      multiple: false,
+      filters: [
+        {
+          name: "Audio",
+          extensions: ["wav", "mp3", "m4a", "aac", "ogg", "flac", "aiff", "webm"],
+        },
+      ],
+    });
+    if (typeof picked !== "string") return;
+    setImporting(true);
+    try {
+      const id = await api.importAudioMeeting({ filePath: picked });
+      await refresh();
+      openMeeting(id);
+    } finally {
+      setImporting(false);
+    }
+  };
 
   // A recording just finished (→ idle): its duration/status landed in the DB,
   // so refetch the list instead of showing the stale in-progress row.
@@ -89,6 +116,9 @@ export function MeetingList() {
             Clear
           </Button>
         )}
+        <Button onClick={() => void importAudio()} disabled={importing}>
+          {importing ? "匯入中…" : "匯入音檔"}
+        </Button>
       </div>
 
       {loading && (

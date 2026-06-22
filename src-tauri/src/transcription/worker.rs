@@ -221,7 +221,17 @@ fn try_gemini(
 
     let n = res.segments.len();
     if let Ok(db) = state.db.lock() {
-        let _ = db.insert_transcript_segments(&res.segments);
+        let run = crate::models::TranscriptRun {
+            id: uuid::Uuid::new_v4().to_string(),
+            meeting_id: meeting_id.to_string(),
+            engine: "gemini".to_string(),
+            model: req.gemini_model.clone(),
+            language: req.language.clone(),
+            created_at: String::new(),
+            segment_count: 0,
+        };
+        let _ = db.insert_transcript_run(&run);
+        let _ = db.insert_transcript_segments(&res.segments, Some(&run.id));
         let summary = crate::models::Summary {
             id: uuid::Uuid::new_v4().to_string(),
             meeting_id: meeting_id.to_string(),
@@ -280,6 +290,22 @@ fn run_whisper(
     let model = lookup(&model_id).unwrap_or_else(|_| default_model());
     let state = app.state::<AppState>();
 
+    // The local whisper pipeline only reads 16 kHz mono WAV (recordings are
+    // already that). Imported non-wav files must go through Gemini.
+    let is_wav = wav_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("wav"));
+    if !is_wav {
+        finish_error(
+            &app,
+            &state,
+            &meeting_id,
+            "本地 whisper 僅支援 wav 檔;此匯入檔請改用 Gemini 引擎(Settings → 轉錄引擎)。".into(),
+        );
+        return;
+    }
+
     // Ensure the whisper model is on disk (download on first use). Only compiled
     // in with the `whisper` feature; without it `transcribe_wav` returns
     // FeatureDisabled below and no download is attempted.
@@ -308,6 +334,8 @@ fn run_whisper(
     // skip for explicit en/ja. Computed before `language` is moved into options.
     #[cfg_attr(not(feature = "opencc"), allow(unused_variables))]
     let want_traditional = language.as_deref().map_or(true, |l| l.starts_with("zh"));
+    // Keep a copy for the run row before `language` moves into the options.
+    let run_language = language.clone();
     let options = ProcessorOptions {
         whisper: WhisperOptions {
             language, // default "zh" (set in commands::transcription_settings)
@@ -337,7 +365,17 @@ fn run_whisper(
                 super::zhconvert::segments_to_traditional(&mut segments);
             }
             if let Ok(db) = state.db.lock() {
-                let _ = db.insert_transcript_segments(&segments);
+                let run = crate::models::TranscriptRun {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    meeting_id: meeting_id.clone(),
+                    engine: "whisper".to_string(),
+                    model: model_id.clone(),
+                    language: run_language.clone(),
+                    created_at: String::new(),
+                    segment_count: 0,
+                };
+                let _ = db.insert_transcript_run(&run);
+                let _ = db.insert_transcript_segments(&segments, Some(&run.id));
                 let _ = db.set_meeting_status(&meeting_id, MeetingStatus::Completed);
             }
             let msg = format!("{} segments", segments.len());

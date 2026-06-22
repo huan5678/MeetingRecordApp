@@ -42,8 +42,8 @@ use crate::audio::recorder::RecorderConfig;
 use crate::audio::system_audio::LoopbackSelection;
 use crate::export::{self, ExportFormat};
 use crate::models::{
-    AiProviderKind, MediaFile, MediaFileType, Meeting, MeetingStatus, Summary, SummaryType,
-    TranscriptSegment,
+    AiProviderKind, MediaFile, MediaFileType, Meeting, MeetingStatus, MeetingType, Summary,
+    SummaryType, TranscriptRun, TranscriptSegment,
 };
 use crate::storage::{self, search, Database, FileStore};
 
@@ -161,8 +161,14 @@ pub struct RecordingStatusDto {
 pub struct MeetingDetailDto {
     pub meeting: Meeting,
     pub media: Vec<MediaFile>,
+    /// Segments of the latest transcription run (the default view).
     pub segments: Vec<TranscriptSegment>,
-    pub summary: Option<Summary>,
+    /// Every transcription run (newest first) so the UI can offer them by
+    /// model + time and load an older run's segments on demand.
+    pub runs: Vec<TranscriptRun>,
+    /// Every summary (newest first); a meeting can have several from different
+    /// models/regenerations.
+    pub summaries: Vec<Summary>,
 }
 
 #[derive(Debug, Serialize)]
@@ -447,14 +453,50 @@ pub fn get_meeting_detail(
         .ok_or_else(|| format!("meeting not found: {id}"))?;
     let media = db.list_media_files(&id).map_err(err)?;
     let segments = db.list_transcript_segments(&id).map_err(err)?;
-    // The newest summary is the one the UI shows (regenerations stack newest-first).
-    let summary = db.list_summaries(&id).map_err(err)?.into_iter().next();
+    let runs = db.list_transcript_runs(&id).map_err(err)?;
+    let summaries = db.list_summaries(&id).map_err(err)?;
     Ok(MeetingDetailDto {
         meeting,
         media,
         segments,
-        summary,
+        runs,
+        summaries,
     })
+}
+
+/// Segments of a specific transcription run (for viewing a non-latest run).
+#[tauri::command]
+pub fn get_run_segments(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<Vec<TranscriptSegment>, String> {
+    lock_db(&state)?
+        .list_transcript_segments_for_run(&run_id)
+        .map_err(err)
+}
+
+/// List every transcription run for a meeting (newest first, with counts).
+#[tauri::command]
+pub fn list_transcript_runs(
+    state: State<'_, AppState>,
+    meeting_id: String,
+) -> Result<Vec<TranscriptRun>, String> {
+    lock_db(&state)?.list_transcript_runs(&meeting_id).map_err(err)
+}
+
+/// Delete one transcription run and its segments.
+#[tauri::command]
+pub fn delete_transcript_run(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<(), String> {
+    lock_db(&state)?.delete_transcript_run(&run_id).map_err(err)
+}
+
+/// Delete one summary.
+#[tauri::command]
+pub fn delete_summary(state: State<'_, AppState>, summary_id: String) -> Result<(), String> {
+    lock_db(&state)?.delete_summary(&summary_id).map_err(err)
 }
 
 /// Delete a meeting: DB rows (cascaded) *and* the on-disk media directory.
@@ -589,6 +631,13 @@ pub fn retranscribe_meeting(
     app: AppHandle,
     state: State<'_, AppState>,
     meeting_id: String,
+    // Optional per-call overrides (history "re-run with another model"); when
+    // absent we fall back to the global transcription settings. A new run is
+    // appended — earlier transcripts are kept for comparison.
+    engine: Option<String>,
+    gemini_model: Option<String>,
+    whisper_model: Option<String>,
+    language: Option<String>,
 ) -> Result<(), String> {
     // Resolve the recorded audio file; its absence is a real, reportable error.
     let media = {
@@ -616,10 +665,116 @@ pub fn retranscribe_meeting(
     }
 
     // Drive transcription on a worker thread (Gemini multimodal or local whisper,
-    // per settings) so it can stream progress without blocking the IPC thread.
-    let req = transcription_settings(&state);
+    // per settings + any per-call overrides) so it can stream progress without
+    // blocking the IPC thread.
+    let mut req = transcription_settings(&state);
+    if let Some(e) = engine {
+        req.engine = e;
+    }
+    if let Some(m) = gemini_model {
+        req.gemini_model = m;
+    }
+    if let Some(m) = whisper_model {
+        req.model_id = m;
+    }
+    if let Some(l) = language {
+        req.language = if l.is_empty() || l == "auto" { None } else { Some(l) };
+    }
     crate::transcription::worker::spawn_transcription(app, meeting_id, wav_path, req);
     Ok(())
+}
+
+/// Import an existing audio file as a new meeting and transcribe it (no
+/// recording). The file is copied into the meeting's media directory; the
+/// configured engine then produces a transcript + summary the same way a
+/// recording would. Returns the new meeting id so the UI can open it.
+///
+/// Non-wav files (mp3/m4a/…) work with the Gemini engine (it decodes by MIME);
+/// the local whisper engine needs wav and reports a clear error otherwise.
+#[tauri::command]
+pub fn import_audio_meeting(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    file_path: String,
+    title: Option<String>,
+    meeting_type: Option<String>,
+    engine: Option<String>,
+    gemini_model: Option<String>,
+    whisper_model: Option<String>,
+    language: Option<String>,
+) -> Result<String, String> {
+    let src = std::path::Path::new(&file_path);
+    if !src.is_file() {
+        return Err(format!("file not found: {file_path}"));
+    }
+    let ext = src
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("wav")
+        .to_ascii_lowercase();
+    let derived_title = title.filter(|t| !t.trim().is_empty()).or_else(|| {
+        src.file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+    });
+
+    let meeting_id = uuid::Uuid::new_v4().to_string();
+    let meeting = Meeting {
+        id: meeting_id.clone(),
+        title: derived_title,
+        start_time: now_iso8601(),
+        end_time: None,
+        duration_seconds: None,
+        status: MeetingStatus::Transcribing,
+        tags: Vec::new(),
+        meeting_type: meeting_type.as_deref().and_then(MeetingType::from_db_str),
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    {
+        let db = lock_db(&state)?;
+        db.insert_meeting(&meeting).map_err(err)?;
+    }
+    state.files.ensure_meeting_dir(&meeting_id).map_err(err)?;
+
+    // Copy the source audio into the meeting dir (keep the original extension so
+    // the player + Gemini MIME detection see the real format).
+    let dest = state
+        .files
+        .media_path(&meeting_id, &format!("source.{ext}"))
+        .map_err(err)?;
+    std::fs::copy(src, &dest).map_err(|e| format!("failed to copy audio: {e}"))?;
+    let size = std::fs::metadata(&dest).map(|m| m.len() as i64).ok();
+    {
+        let db = lock_db(&state)?;
+        db.insert_media_file(&MediaFile {
+            id: uuid::Uuid::new_v4().to_string(),
+            meeting_id: meeting_id.clone(),
+            file_type: MediaFileType::Audio,
+            file_path: dest.to_string_lossy().into_owned(),
+            file_size_bytes: size,
+            format: Some(ext),
+            duration_seconds: None,
+            created_at: String::new(),
+        })
+        .map_err(err)?;
+    }
+
+    let mut req = transcription_settings(&state);
+    if let Some(e) = engine {
+        req.engine = e;
+    }
+    if let Some(m) = gemini_model {
+        req.gemini_model = m;
+    }
+    if let Some(m) = whisper_model {
+        req.model_id = m;
+    }
+    if let Some(l) = language {
+        req.language = if l.is_empty() || l == "auto" { None } else { Some(l) };
+    }
+    crate::transcription::worker::spawn_transcription(app, meeting_id.clone(), dest, req);
+    Ok(meeting_id)
 }
 
 /// Edit a single transcript segment's text (and optionally speaker label). The

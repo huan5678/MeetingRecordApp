@@ -61,6 +61,17 @@ export interface TranscriptSegment {
   created_at: string;
 }
 
+/** Maps `models::TranscriptRun` — one transcription run (engine/model) of a meeting. */
+export interface TranscriptRun {
+  id: string;
+  meeting_id: string;
+  engine: string;
+  model: string;
+  language: string | null;
+  created_at: string;
+  segment_count: number;
+}
+
 /** Maps `models::ActionItem` (element of `summaries.action_items`). */
 export interface ActionItem {
   task: string;

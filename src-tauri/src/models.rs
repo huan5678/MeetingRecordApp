@@ -220,6 +220,26 @@ pub struct TranscriptSegment {
     pub created_at: String,
 }
 
+/// One transcription run for a meeting (a meeting can be transcribed more than
+/// once with different engines/models — we keep every result). Maps to
+/// `transcript_runs`; its segments are `transcript_segments` with this `id` as
+/// their `run_id`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TranscriptRun {
+    pub id: String,
+    pub meeting_id: String,
+    /// Engine that produced this run: "gemini" | "whisper".
+    pub engine: String,
+    /// Model id (e.g. "gemini-3.5-flash", "belle-turbo-zh").
+    pub model: String,
+    /// Forced language ("zh"/…) or `None` for auto-detect.
+    pub language: Option<String>,
+    pub created_at: String,
+    /// Number of segments in this run. Derived at query time (not a column).
+    #[serde(default)]
+    pub segment_count: i64,
+}
+
 /// An AI-generated summary for a meeting. Maps to `summaries`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Summary {

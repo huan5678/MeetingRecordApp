@@ -15,13 +15,16 @@ use rusqlite::{Connection, OptionalExtension, Row};
 
 use crate::models::{
     AiProviderKind, MediaFile, MediaFileType, Meeting, MeetingStatus, MeetingType, Settings,
-    Summary, SummaryType, TranscriptSegment,
+    Summary, SummaryType, TranscriptRun, TranscriptSegment,
 };
 use crate::storage::{Result, StorageError};
 
 /// The embedded v1.0 schema (PRD §4.3), including the FTS5 virtual table and
 /// the REQUIRED external-content sync triggers.
 const MIGRATION_001: &str = include_str!("../../migrations/001_initial.sql");
+
+/// Migration 002: versioned transcripts (`transcript_runs` + the `run_id` link).
+const MIGRATION_002: &str = include_str!("../../migrations/002_transcript_runs.sql");
 
 /// A handle to the application's SQLite database.
 pub struct Database {
@@ -51,9 +54,29 @@ impl Database {
         Ok(db)
     }
 
-    /// Apply `001_initial.sql`. Idempotent (all statements are `IF NOT EXISTS`).
+    /// Apply the embedded migrations. Idempotent: the SQL is all `IF NOT
+    /// EXISTS`, and the one column-add is guarded by a `PRAGMA table_info`
+    /// check (SQLite has no `ADD COLUMN IF NOT EXISTS`). Order matters: the
+    /// `run_id` column must exist before 002 indexes it.
     pub fn run_migrations(&self) -> Result<()> {
         self.conn.execute_batch(MIGRATION_001)?;
+        self.ensure_column("transcript_segments", "run_id", "TEXT")?;
+        self.conn.execute_batch(MIGRATION_002)?;
+        Ok(())
+    }
+
+    /// Add `column` to `table` if it isn't already present. Used for additive
+    /// migrations on databases created by an earlier schema version.
+    fn ensure_column(&self, table: &str, column: &str, decl_type: &str) -> Result<()> {
+        let mut stmt = self.conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let exists = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(|r| r.ok())
+            .any(|name| name == column);
+        if !exists {
+            self.conn
+                .execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl_type}"), [])?;
+        }
         Ok(())
     }
 
@@ -257,15 +280,22 @@ impl Database {
 
     /// Insert many segments in one transaction (the transcription pipeline
     /// writes a whole meeting's worth at once).
-    pub fn insert_transcript_segments(&self, segments: &[TranscriptSegment]) -> Result<()> {
+    /// Insert a batch of segments, all belonging to the same transcription run
+    /// (`run_id`). `run_id` is `None` only for legacy/test inserts that predate
+    /// versioned transcripts; new code always passes one.
+    pub fn insert_transcript_segments(
+        &self,
+        segments: &[TranscriptSegment],
+        run_id: Option<&str>,
+    ) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO transcript_segments
                     (id, meeting_id, segment_index, start_time_ms, end_time_ms,
-                     text, speaker, confidence, language, created_at)
+                     text, speaker, confidence, language, created_at, run_id)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
-                         COALESCE(NULLIF(?10, ''), CURRENT_TIMESTAMP))",
+                         COALESCE(NULLIF(?10, ''), CURRENT_TIMESTAMP), ?11)",
             )?;
             for s in segments {
                 stmt.execute(rusqlite::params![
@@ -279,6 +309,7 @@ impl Database {
                     s.confidence,
                     s.language,
                     s.created_at,
+                    run_id,
                 ])?;
             }
         }
@@ -286,8 +317,38 @@ impl Database {
         Ok(())
     }
 
-    /// All segments for a meeting, ordered by `segment_index` (i.e. timeline).
+    /// Segments of a meeting's **latest** transcription run, ordered by the
+    /// timeline. This is the default view (detail page, export, summary input).
+    /// Falls back to all segments for legacy meetings that have no run rows.
     pub fn list_transcript_segments(&self, meeting_id: &str) -> Result<Vec<TranscriptSegment>> {
+        match self.latest_run_id(meeting_id)? {
+            Some(run_id) => self.list_transcript_segments_for_run(&run_id),
+            None => self.list_legacy_segments(meeting_id),
+        }
+    }
+
+    /// All segments for `run_id`, ordered by the timeline.
+    pub fn list_transcript_segments_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<TranscriptSegment>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, meeting_id, segment_index, start_time_ms, end_time_ms,
+                    text, speaker, confidence, language, created_at
+             FROM transcript_segments WHERE run_id = ?1
+             ORDER BY segment_index ASC, start_time_ms ASC",
+        )?;
+        let rows = stmt.query_map([run_id], row_to_segment)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// All segments for a meeting regardless of run (used as the legacy
+    /// fallback when a meeting predates `transcript_runs`).
+    fn list_legacy_segments(&self, meeting_id: &str) -> Result<Vec<TranscriptSegment>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, meeting_id, segment_index, start_time_ms, end_time_ms,
                     text, speaker, confidence, language, created_at
@@ -300,6 +361,64 @@ impl Database {
             out.push(r?);
         }
         Ok(out)
+    }
+
+    // -- transcript runs ----------------------------------------------------
+
+    /// Record a transcription run. `created_at` defaults to now when empty.
+    pub fn insert_transcript_run(&self, r: &TranscriptRun) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO transcript_runs (id, meeting_id, engine, model, language, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, COALESCE(NULLIF(?6, ''), CURRENT_TIMESTAMP))",
+            rusqlite::params![r.id, r.meeting_id, r.engine, r.model, r.language, r.created_at],
+        )?;
+        Ok(())
+    }
+
+    /// All runs for a meeting, newest first, each with its segment count.
+    pub fn list_transcript_runs(&self, meeting_id: &str) -> Result<Vec<TranscriptRun>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT r.id, r.meeting_id, r.engine, r.model, r.language, r.created_at,
+                    (SELECT COUNT(*) FROM transcript_segments s WHERE s.run_id = r.id)
+             FROM transcript_runs r WHERE r.meeting_id = ?1
+             ORDER BY r.created_at DESC, r.rowid DESC",
+        )?;
+        let rows = stmt.query_map([meeting_id], row_to_run)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// The most recent run id for a meeting, or `None` if it has no runs.
+    fn latest_run_id(&self, meeting_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id FROM transcript_runs WHERE meeting_id = ?1
+                 ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                [meeting_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?)
+    }
+
+    /// Delete a run and the segments it produced (the `AFTER DELETE` trigger
+    /// keeps the FTS index in sync).
+    pub fn delete_transcript_run(&self, run_id: &str) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM transcript_segments WHERE run_id = ?1", [run_id])?;
+        tx.execute("DELETE FROM transcript_runs WHERE id = ?1", [run_id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Delete a single summary (the user can prune old regenerations).
+    pub fn delete_summary(&self, summary_id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM summaries WHERE id = ?1", [summary_id])?;
+        Ok(())
     }
 
     /// Update a segment's text/speaker (transcript editing, post-diarization
@@ -553,6 +672,18 @@ fn row_to_segment(row: &Row) -> rusqlite::Result<TranscriptSegment> {
     })
 }
 
+fn row_to_run(row: &Row) -> rusqlite::Result<TranscriptRun> {
+    Ok(TranscriptRun {
+        id: row.get(0)?,
+        meeting_id: row.get(1)?,
+        engine: row.get(2)?,
+        model: row.get(3)?,
+        language: row.get(4)?,
+        created_at: row.get(5)?,
+        segment_count: row.get(6)?,
+    })
+}
+
 fn row_to_summary(row: &Row) -> rusqlite::Result<Result<Summary>> {
     let type_str: String = row.get(2)?;
     let action_items_str: Option<String> = row.get(4)?;
@@ -790,12 +921,70 @@ mod tests {
             sample_segment("s2", "m1", 1, "second"),
             sample_segment("s1", "m1", 0, "first"),
         ];
-        db.insert_transcript_segments(&segs).unwrap();
+        // No run id → legacy fallback returns every segment for the meeting.
+        db.insert_transcript_segments(&segs, None).unwrap();
 
         let list = db.list_transcript_segments("m1").unwrap();
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].segment_index, 0, "ordered by segment_index");
         assert_eq!(list[1].segment_index, 1);
+    }
+
+    #[test]
+    fn transcript_runs_are_versioned_and_default_to_latest() {
+        let db = new_db();
+        db.insert_meeting(&sample_meeting("m1")).unwrap();
+
+        let run1 = TranscriptRun {
+            id: "r1".into(),
+            meeting_id: "m1".into(),
+            engine: "whisper".into(),
+            model: "belle-turbo-zh".into(),
+            language: Some("zh".into()),
+            created_at: "2026-06-23 10:00:00".into(),
+            segment_count: 0,
+        };
+        let run2 = TranscriptRun {
+            id: "r2".into(),
+            engine: "gemini".into(),
+            model: "gemini-3.5-flash".into(),
+            created_at: "2026-06-23 11:00:00".into(),
+            ..run1.clone()
+        };
+        db.insert_transcript_run(&run1).unwrap();
+        db.insert_transcript_run(&run2).unwrap();
+        db.insert_transcript_segments(&[sample_segment("a", "m1", 0, "old run")], Some("r1"))
+            .unwrap();
+        db.insert_transcript_segments(
+            &[
+                sample_segment("b", "m1", 0, "new run 1"),
+                sample_segment("c", "m1", 1, "new run 2"),
+            ],
+            Some("r2"),
+        )
+        .unwrap();
+
+        // Default view = latest run (r2).
+        let latest = db.list_transcript_segments("m1").unwrap();
+        assert_eq!(latest.len(), 2);
+        assert_eq!(latest[0].text, "new run 1");
+
+        // Explicit older run still retrievable.
+        let old = db.list_transcript_segments_for_run("r1").unwrap();
+        assert_eq!(old.len(), 1);
+        assert_eq!(old[0].text, "old run");
+
+        // Runs listed newest-first with counts.
+        let runs = db.list_transcript_runs("m1").unwrap();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].id, "r2");
+        assert_eq!(runs[0].segment_count, 2);
+        assert_eq!(runs[1].segment_count, 1);
+
+        // Deleting a run drops its segments; default falls back to the other.
+        db.delete_transcript_run("r2").unwrap();
+        assert_eq!(db.list_transcript_runs("m1").unwrap().len(), 1);
+        assert_eq!(db.list_transcript_segments("m1").unwrap()[0].text, "old run");
     }
 
     #[test]

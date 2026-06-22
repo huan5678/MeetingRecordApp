@@ -17,6 +17,7 @@
 import type {
   Meeting,
   MediaFile,
+  TranscriptRun,
   TranscriptSegment,
   Summary,
 } from "@/lib/types";
@@ -40,6 +41,11 @@ export const COMMANDS = {
   // transcription
   getTranscriptionStatus: "get_transcription_status",
   retranscribeMeeting: "retranscribe_meeting",
+  importAudioMeeting: "import_audio_meeting",
+  listTranscriptRuns: "list_transcript_runs",
+  getRunSegments: "get_run_segments",
+  deleteTranscriptRun: "delete_transcript_run",
+  deleteSummary: "delete_summary",
   updateSegment: "update_segment",
   // summary
   generateSummary: "generate_summary",
@@ -97,8 +103,20 @@ export interface RecordingStatusDto {
 export interface MeetingDetailDto {
   meeting: Meeting;
   media: MediaFile[];
+  /** Segments of the latest transcription run (default view). */
   segments: TranscriptSegment[];
-  summary: Summary | null;
+  /** Every transcription run, newest first (label by model + time). */
+  runs: TranscriptRun[];
+  /** Every summary, newest first. */
+  summaries: Summary[];
+}
+
+/** Per-call transcription overrides for re-running / importing. */
+export interface TranscribeOpts {
+  engine?: string;
+  geminiModel?: string;
+  whisperModel?: string;
+  language?: string;
 }
 
 export interface AudioDevice {
@@ -155,6 +173,21 @@ export const api = {
     }),
   updateSegment: (segmentId: string, text: string, speaker: string | null) =>
     call<void>(COMMANDS.updateSegment, { segmentId, text, speaker }),
+  /** Re-run transcription for an existing meeting; appends a new run. */
+  retranscribeMeeting: (meetingId: string, opts: TranscribeOpts = {}) =>
+    call<void>(COMMANDS.retranscribeMeeting, { meetingId, ...opts }),
+  /** Import an audio file as a new meeting + transcribe it. Returns its id. */
+  importAudioMeeting: (
+    opts: { filePath: string; title?: string; meetingType?: string } & TranscribeOpts,
+  ) => call<string>(COMMANDS.importAudioMeeting, { ...opts }),
+  listTranscriptRuns: (meetingId: string) =>
+    call<TranscriptRun[]>(COMMANDS.listTranscriptRuns, { meetingId }),
+  getRunSegments: (runId: string) =>
+    call<TranscriptSegment[]>(COMMANDS.getRunSegments, { runId }),
+  deleteTranscriptRun: (runId: string) =>
+    call<void>(COMMANDS.deleteTranscriptRun, { runId }),
+  deleteSummary: (summaryId: string) =>
+    call<void>(COMMANDS.deleteSummary, { summaryId }),
 
   // --- summary ---
   generateSummary: (opts: {
@@ -233,14 +266,22 @@ async function mockInvoke<T>(
         promptTokens: 4200,
         estimatedUsd: String(args?.provider) === "ollama" ? 0 : 0.012,
       } as unknown as T;
+    case COMMANDS.listTranscriptRuns:
+      return MOCK_DETAIL(String(args?.meetingId ?? "")).runs as unknown as T;
+    case COMMANDS.getRunSegments:
+      return MOCK_DETAIL("").segments as unknown as T;
     case COMMANDS.startRecording:
     case COMMANDS.stopRecording:
+    case COMMANDS.importAudioMeeting:
     case COMMANDS.exportMeeting:
       return "mock-id" as unknown as T;
     // Fire-and-forget commands resolve to undefined in mock mode.
     case COMMANDS.pauseRecording:
     case COMMANDS.resumeRecording:
     case COMMANDS.deleteMeeting:
+    case COMMANDS.retranscribeMeeting:
+    case COMMANDS.deleteTranscriptRun:
+    case COMMANDS.deleteSummary:
     case COMMANDS.updateSegment:
     case COMMANDS.setSetting:
     case COMMANDS.setApiKey:

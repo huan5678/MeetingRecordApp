@@ -49,7 +49,10 @@ pub async fn transcribe_and_summarize(
     let bytes =
         std::fs::read(wav_path).map_err(|e| AiError::Parse(format!("read wav: {e}")))?;
 
-    let file_uri = upload_audio(&client, &api_key, bytes).await?;
+    // Recordings are wav; imported files may be mp3/m4a/etc. Gemini decodes by
+    // the declared MIME type, so derive it from the extension.
+    let mime = mime_for(wav_path);
+    let file_uri = upload_audio(&client, &api_key, bytes, mime).await?;
 
     let prompt = build_prompt(template);
     let body = GenerateContentRequest {
@@ -58,7 +61,7 @@ pub async fn transcribe_and_summarize(
             parts: vec![
                 GPart::File {
                     file_data: GFileData {
-                        mime_type: "audio/wav",
+                        mime_type: mime,
                         file_uri,
                     },
                 },
@@ -112,6 +115,7 @@ async fn upload_audio(
     client: &reqwest::Client,
     api_key: &str,
     bytes: Vec<u8>,
+    mime: &str,
 ) -> Result<String> {
     let num_bytes = bytes.len();
 
@@ -121,7 +125,7 @@ async fn upload_audio(
         .header("X-Goog-Upload-Protocol", "resumable")
         .header("X-Goog-Upload-Command", "start")
         .header("X-Goog-Upload-Header-Content-Length", num_bytes.to_string())
-        .header("X-Goog-Upload-Header-Content-Type", "audio/wav")
+        .header("X-Goog-Upload-Header-Content-Type", mime)
         .json(&serde_json::json!({ "file": { "display_name": "meeting" } }))
         .send()
         .await?;
@@ -237,6 +241,28 @@ fn parse_audio_response(
         summary,
         language,
     })
+}
+
+/// Map a file extension to the audio MIME type Gemini understands. Covers the
+/// common meeting formats; unknown/extension-less files default to wav (the
+/// app's own recording format).
+/// ponytail: known formats only; add more rows if users import exotic codecs.
+fn mime_for(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("mp3") => "audio/mp3",
+        Some("m4a") | Some("mp4") => "audio/mp4",
+        Some("aac") => "audio/aac",
+        Some("ogg") | Some("oga") | Some("opus") => "audio/ogg",
+        Some("flac") => "audio/flac",
+        Some("aiff") | Some("aif") => "audio/aiff",
+        Some("webm") => "audio/webm",
+        _ => "audio/wav",
+    }
 }
 
 /// Build the instruction prompt: Traditional Chinese, diarization + ms
@@ -407,6 +433,15 @@ mod tests {
         assert_eq!(r.summary.action_items.len(), 1);
         assert_eq!(r.summary.provider, AiProviderKind::Gemini);
         assert_eq!(r.summary.tokens_used, Some(42));
+    }
+
+    #[test]
+    fn mime_for_maps_common_extensions() {
+        assert_eq!(mime_for(Path::new("recording.wav")), "audio/wav");
+        assert_eq!(mime_for(Path::new("a.MP3")), "audio/mp3");
+        assert_eq!(mime_for(Path::new("voice memo.m4a")), "audio/mp4");
+        assert_eq!(mime_for(Path::new("x.flac")), "audio/flac");
+        assert_eq!(mime_for(Path::new("noext")), "audio/wav");
     }
 
     #[test]
