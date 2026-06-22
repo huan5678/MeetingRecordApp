@@ -364,8 +364,15 @@ pub fn stop_recording(app: AppHandle, state: State<'_, AppState>) -> Result<Stri
     // Auto-transcribe. Real with `--features whisper` + a cached model; otherwise
     // the worker reports the feature is disabled and flips the meeting to Error.
     if let Some(wav) = wav_for_transcription {
-        let (model_id, diarize) = transcription_settings(&state);
-        crate::transcription::worker::spawn_transcription(app, id.clone(), wav, model_id, diarize);
+        let (model_id, diarize, language) = transcription_settings(&state);
+        crate::transcription::worker::spawn_transcription(
+            app,
+            id.clone(),
+            wav,
+            model_id,
+            diarize,
+            language,
+        );
     }
 
     Ok(id)
@@ -617,8 +624,15 @@ pub fn retranscribe_meeting(
 
     // Drive the real pipeline (model + whisper + diarization) on a worker thread
     // so it can stream progress without blocking the IPC thread.
-    let (model_id, diarize) = transcription_settings(&state);
-    crate::transcription::worker::spawn_transcription(app, meeting_id, wav_path, model_id, diarize);
+    let (model_id, diarize, language) = transcription_settings(&state);
+    crate::transcription::worker::spawn_transcription(
+        app,
+        meeting_id,
+        wav_path,
+        model_id,
+        diarize,
+        language,
+    );
     Ok(())
 }
 
@@ -938,10 +952,13 @@ fn join_transcript(segments: &[TranscriptSegment]) -> String {
 }
 
 /// Read the user's transcription preferences from settings, with sane defaults:
-/// whisper model `small` (PRD §4.5) and diarization on.
-fn transcription_settings(state: &State<'_, AppState>) -> (String, bool) {
+/// whisper model `small` (PRD §4.5), diarization on, and **language Chinese**
+/// (`zh`) by default — auto-detect mis-fires on short clips, so we bias to the
+/// user's primary language. A stored `whisper_language` ("en"/"ja"/"auto"/…)
+/// overrides; "auto"/"" means let whisper detect.
+fn transcription_settings(state: &State<'_, AppState>) -> (String, bool, Option<String>) {
     let Ok(db) = state.db.lock() else {
-        return ("small".to_string(), true);
+        return ("small".to_string(), true, Some("zh".to_string()));
     };
     let model = db
         .get_setting("whisper_model")
@@ -954,7 +971,12 @@ fn transcription_settings(state: &State<'_, AppState>) -> (String, bool) {
         .flatten()
         .map(|v| v != "false")
         .unwrap_or(true);
-    (model, diarize)
+    let language = match db.get_setting("whisper_language").ok().flatten() {
+        Some(l) if l.is_empty() || l == "auto" => None,
+        Some(l) => Some(l),
+        None => Some("zh".to_string()),
+    };
+    (model, diarize, language)
 }
 
 /// Current UTC timestamp as the SQLite `DATETIME` text form (`YYYY-MM-DD

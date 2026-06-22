@@ -24,6 +24,7 @@ use crate::models::MeetingStatus;
 
 use super::model::{default_model, lookup, ModelManager};
 use super::processor::{Processor, ProcessorOptions};
+use super::whisper::WhisperOptions;
 use super::{Progress, ProgressStage};
 
 /// Event payload pushed to the frontend on each progress tick / terminal state.
@@ -88,13 +89,21 @@ pub fn spawn_transcription(
     wav_path: PathBuf,
     model_id: String,
     diarize: bool,
+    language: Option<String>,
 ) {
     let _ = std::thread::Builder::new()
         .name("transcription".into())
-        .spawn(move || run(app, meeting_id, wav_path, model_id, diarize));
+        .spawn(move || run(app, meeting_id, wav_path, model_id, diarize, language));
 }
 
-fn run(app: AppHandle, meeting_id: String, wav_path: PathBuf, model_id: String, diarize: bool) {
+fn run(
+    app: AppHandle,
+    meeting_id: String,
+    wav_path: PathBuf,
+    model_id: String,
+    diarize: bool,
+    language: Option<String>,
+) {
     let cache_dir = app
         .path()
         .app_data_dir()
@@ -129,8 +138,11 @@ fn run(app: AppHandle, meeting_id: String, wav_path: PathBuf, model_id: String, 
     let processor = Processor::new(manager);
     let created_at = crate::commands::now_iso8601();
     let options = ProcessorOptions {
+        whisper: WhisperOptions {
+            language, // default "zh" (set in commands::transcription_settings)
+            ..Default::default()
+        },
         diarize,
-        ..Default::default()
     };
 
     let result = processor.transcribe_wav(
