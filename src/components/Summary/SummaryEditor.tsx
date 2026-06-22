@@ -28,6 +28,7 @@ export function SummaryEditor({ meetingId, onGenerated }: SummaryEditorProps) {
   const [prompt, setPrompt] = useState("");
   const [estimate, setEstimate] = useState<CostEstimateDto | null>(null);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const isCloud = provider !== AI_PROVIDERS.Ollama;
 
@@ -46,6 +47,7 @@ export function SummaryEditor({ meetingId, onGenerated }: SummaryEditorProps) {
 
   const generate = async () => {
     setBusy(true);
+    setError(null);
     try {
       await api.generateSummary({
         meetingId,
@@ -54,6 +56,8 @@ export function SummaryEditor({ meetingId, onGenerated }: SummaryEditorProps) {
         prompt: prompt.trim() || undefined,
       });
       onGenerated?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -121,6 +125,17 @@ export function SummaryEditor({ meetingId, onGenerated }: SummaryEditorProps) {
             </button>
           )}
         </div>
+      )}
+
+      {error && (
+        <p
+          className="rounded-md bg-red-50 p-2 text-xs text-red-700 dark:bg-red-900/30 dark:text-red-300"
+          role="alert"
+        >
+          {error.includes("no transcript")
+            ? "This meeting has no transcript yet — transcription needs a build with the whisper feature + a downloaded model. Summary needs a transcript to work from."
+            : error}
+        </p>
       )}
 
       <div className="flex justify-end">
