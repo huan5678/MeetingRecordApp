@@ -114,13 +114,14 @@ export const PROVIDER_META: Record<AiProvider, ProviderMeta> = {
  */
 export const WHISPER_MODELS = [
   { id: "tiny", label: "Tiny (~75 MB, fastest)" },
-  { id: "base", label: "Base (~142 MB, default)" },
-  { id: "small", label: "Small (~466 MB, recommended)" },
-  { id: "medium", label: "Medium (~1.5 GB, slower)" },
+  { id: "base", label: "Base (~142 MB)" },
+  { id: "small", label: "Small (~466 MB)" },
+  { id: "belle-turbo-zh", label: "中文 Turbo (Belle, ~1.6 GB, 推薦)" },
+  { id: "medium", label: "Medium (~1.5 GB)" },
   { id: "large-v3", label: "Large v3 (~3 GB, best, slowest)" },
 ] as const;
 export type WhisperModel = (typeof WHISPER_MODELS)[number]["id"];
-export const DEFAULT_WHISPER_MODEL: WhisperModel = "base";
+export const DEFAULT_WHISPER_MODEL: WhisperModel = "belle-turbo-zh";
 
 /** Transcription languages whisper supports for our target users (PRD §3.3). */
 export const TRANSCRIPTION_LANGUAGES = [

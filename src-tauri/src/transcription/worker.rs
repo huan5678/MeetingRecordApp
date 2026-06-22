@@ -137,6 +137,10 @@ fn run(
 
     let processor = Processor::new(manager);
     let created_at = crate::commands::now_iso8601();
+    // Convert Simplified→Traditional afterwards for Chinese / auto-detect (None);
+    // skip for explicit en/ja. Computed before `language` is moved into options.
+    #[cfg_attr(not(feature = "opencc"), allow(unused_variables))]
+    let want_traditional = language.as_deref().map_or(true, |l| l.starts_with("zh"));
     let options = ProcessorOptions {
         whisper: WhisperOptions {
             language, // default "zh" (set in commands::transcription_settings)
@@ -156,6 +160,15 @@ fn run(
 
     match result {
         Ok(segments) => {
+            // Simplified→Traditional (OpenCC s2twp) when transcribing Chinese.
+            // The `mut` rebind is feature-gated so the default build (which never
+            // mutates) has no unused-mut warning.
+            #[cfg(feature = "opencc")]
+            let mut segments = segments;
+            #[cfg(feature = "opencc")]
+            if want_traditional {
+                super::zhconvert::segments_to_traditional(&mut segments);
+            }
             if let Ok(db) = state.db.lock() {
                 let _ = db.insert_transcript_segments(&segments);
                 let _ = db.set_meeting_status(&meeting_id, MeetingStatus::Completed);

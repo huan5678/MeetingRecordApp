@@ -54,7 +54,7 @@ const DEFAULTS: SettingsState = {
   systemAudioEnabled: true,
   keepDualTrack: false,
   whisperModel: DEFAULT_WHISPER_MODEL,
-  language: "auto",
+  language: "zh",
   diarizationEnabled: true,
   aiProvider: DEFAULT_AI_PROVIDER,
   aiModel: PROVIDER_META[DEFAULT_AI_PROVIDER].models[0],
@@ -117,13 +117,21 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   load: async () => {
     try {
       const rows = await api.getSettings();
-      if (rows && rows[SETTINGS_KEYS.Theme]) {
-        const t = rows[SETTINGS_KEYS.Theme] as Theme;
-        set({ theme: t });
-        applyTheme(t);
+      if (!rows) return;
+      // Hydrate every persisted field so the UI reflects saved settings (booleans
+      // were stored as "true"/"false"; everything else is a plain string).
+      const next: Partial<SettingsState> = {};
+      for (const [field, key] of Object.entries(FIELD_KEY) as [
+        keyof SettingsState,
+        string,
+      ][]) {
+        const raw = rows[key];
+        if (raw === undefined) continue;
+        const isBool = typeof DEFAULTS[field] === "boolean";
+        (next as Record<string, unknown>)[field] = isBool ? raw === "true" : raw;
       }
-      // Backend hydration of the remaining typed fields is wired in Integrate;
-      // mock mode returns {} so we keep the defaults.
+      set(next);
+      if (next.theme) applyTheme(next.theme as Theme);
     } catch {
       /* ignore */
     }

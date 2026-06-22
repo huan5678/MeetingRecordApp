@@ -960,18 +960,19 @@ fn transcription_settings(state: &State<'_, AppState>) -> (String, bool, Option<
     let Ok(db) = state.db.lock() else {
         return ("belle-turbo-zh".to_string(), true, Some("zh".to_string()));
     };
+    // Keys MUST match src/lib/constants.ts SETTINGS_KEYS (the UI writes these).
     let model = db
-        .get_setting("whisper_model")
+        .get_setting("transcription.whisper_model")
         .ok()
         .flatten()
         .unwrap_or_else(|| "belle-turbo-zh".to_string());
     let diarize = db
-        .get_setting("diarize")
+        .get_setting("transcription.diarization_enabled")
         .ok()
         .flatten()
         .map(|v| v != "false")
         .unwrap_or(true);
-    let language = match db.get_setting("whisper_language").ok().flatten() {
+    let language = match db.get_setting("transcription.language").ok().flatten() {
         Some(l) if l.is_empty() || l == "auto" => None,
         Some(l) => Some(l),
         None => Some("zh".to_string()),

@@ -24,6 +24,7 @@ pub mod model;
 pub mod processor;
 pub mod whisper;
 pub mod worker;
+pub mod zhconvert;
 
 use std::path::PathBuf;
 
