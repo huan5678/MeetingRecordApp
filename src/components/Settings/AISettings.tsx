@@ -196,21 +196,32 @@ function ApiKeyField({ provider }: { provider: AiProvider }) {
   const [hasKey, setHasKey] = useState(false);
   const [value, setValue] = useState("");
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setValue("");
     setSaved(false);
+    setError(null);
     void api
       .hasApiKey(provider)
       .then(setHasKey)
       .catch(() => setHasKey(false));
   }, [provider]);
 
+  // Persist, then CONFIRM the write actually landed in the keychain (don't
+  // assume success — a silently-failing keychain looks "saved" but isn't).
   const save = async () => {
-    await api.setApiKey(provider, value).catch(() => {});
-    setHasKey(true);
-    setSaved(true);
-    setValue("");
+    setError(null);
+    try {
+      await api.setApiKey(provider, value);
+      const ok = await api.hasApiKey(provider);
+      setHasKey(ok);
+      setSaved(ok);
+      if (!ok) setError("金鑰未能寫入系統金鑰庫,請再試一次。");
+      else setValue("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   return (
@@ -237,6 +248,11 @@ function ApiKeyField({ provider }: { provider: AiProvider }) {
           {saved ? "Saved" : "Save"}
         </Button>
       </div>
+      {error && (
+        <p className="mt-1 text-xs text-red-600 dark:text-red-400" role="alert">
+          {error}
+        </p>
+      )}
     </Field>
   );
 }

@@ -44,7 +44,10 @@ cpal = "0.15"
 hound = "3.5"
 
 # Secrets / identity / errors
-keyring = "3"
+# keyring 3.x defaults to an in-memory MOCK store unless a platform backend
+# feature is enabled — without these, set_api_key never persists. We target
+# Windows (Credential Manager) + dev on macOS (Keychain).
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 anyhow = "1"
 thiserror = "2"
