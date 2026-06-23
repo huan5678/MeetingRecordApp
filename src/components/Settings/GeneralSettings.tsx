@@ -65,7 +65,10 @@ export function GeneralSettings() {
         />
       </Row>
 
-      <Field label="Storage location" hint="Where recordings are saved.">
+      <Field
+        label="Storage location"
+        hint="New recordings are saved here. Existing recordings stay where they were saved."
+      >
         <div className="flex gap-2">
           <input
             type="text"

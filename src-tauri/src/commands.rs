@@ -118,7 +118,16 @@ impl AppState {
     pub fn bootstrap(data_dir: &std::path::Path) -> Result<Self, String> {
         std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
         let db = Database::open(data_dir.join("meetingrecord.sqlite3")).map_err(err)?;
-        let files = FileStore::new(data_dir.join("recordings")).map_err(err)?;
+        // Honor a user-configured recordings folder (general.storage_dir); fall
+        // back to the default app-data `recordings/` dir when unset.
+        let root = db
+            .get_setting("general.storage_dir")
+            .ok()
+            .flatten()
+            .filter(|s| !s.trim().is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| data_dir.join("recordings"));
+        let files = FileStore::new(root).map_err(err)?;
         Ok(AppState {
             db: Mutex::new(db),
             files,
@@ -1020,7 +1029,13 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<std::collections::Hash
 
 #[tauri::command]
 pub fn set_setting(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
-    lock_db(&state)?.set_setting(&key, &value).map_err(err)
+    lock_db(&state)?.set_setting(&key, &value).map_err(err)?;
+    // Re-point the recordings folder immediately so new recordings/imports land
+    // in the chosen directory (existing files keep their stored absolute paths).
+    if key == "general.storage_dir" && !value.trim().is_empty() {
+        state.files.set_root(&value).map_err(err)?;
+    }
+    Ok(())
 }
 
 /// List available audio input + output devices for the settings UI. On Windows

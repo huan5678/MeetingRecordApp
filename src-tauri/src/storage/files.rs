@@ -10,13 +10,16 @@
 //! and runs the same on the dev Mac and the Windows target.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 
 use crate::storage::Result;
 
-/// Owns the on-disk recordings directory.
+/// Owns the on-disk recordings directory. The root is swappable at runtime
+/// (behind a lock, shared across clones) so changing the storage-location
+/// setting takes effect for new recordings without a restart.
 #[derive(Debug, Clone)]
 pub struct FileStore {
-    root: PathBuf,
+    root: Arc<RwLock<PathBuf>>,
 }
 
 impl FileStore {
@@ -24,18 +27,30 @@ impl FileStore {
     pub fn new<P: AsRef<Path>>(root: P) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
         std::fs::create_dir_all(&root)?;
-        Ok(Self { root })
+        Ok(Self {
+            root: Arc::new(RwLock::new(root)),
+        })
     }
 
-    /// The recordings root directory.
-    pub fn root(&self) -> &Path {
-        &self.root
+    /// The current recordings root directory.
+    pub fn root(&self) -> PathBuf {
+        self.root.read().expect("file store root lock").clone()
+    }
+
+    /// Re-point the recordings root (the user changed the storage folder in
+    /// settings). New recordings land here; existing files keep their stored
+    /// absolute paths. Creates the directory if missing.
+    pub fn set_root<P: AsRef<Path>>(&self, root: P) -> Result<()> {
+        let root = root.as_ref().to_path_buf();
+        std::fs::create_dir_all(&root)?;
+        *self.root.write().expect("file store root lock") = root;
+        Ok(())
     }
 
     /// `<root>/<meeting_id>` — the directory holding a meeting's media. Does not
     /// touch the filesystem; pair with [`FileStore::ensure_meeting_dir`].
     pub fn meeting_dir(&self, meeting_id: &str) -> PathBuf {
-        self.root.join(meeting_id)
+        self.root().join(meeting_id)
     }
 
     /// Create (if needed) and return the meeting's media directory.
@@ -55,7 +70,7 @@ impl FileStore {
     /// Total bytes used by everything under the recordings root. Walks the tree;
     /// missing files are skipped. Used for the storage-usage indicator.
     pub fn total_storage_bytes(&self) -> Result<u64> {
-        dir_size(&self.root)
+        dir_size(&self.root())
     }
 
     /// Bytes used by a single meeting's directory. `0` if it doesn't exist.
@@ -85,13 +100,11 @@ impl FileStore {
     /// shouldn't. Returns `true` if a file was removed.
     pub fn delete_file<P: AsRef<Path>>(&self, path: P) -> Result<bool> {
         let path = path.as_ref();
-        if !is_within(&self.root, path) {
+        let root = self.root();
+        if !is_within(&root, path) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
-                format!(
-                    "refusing to delete {path:?}: outside recordings root {:?}",
-                    self.root
-                ),
+                format!("refusing to delete {path:?}: outside recordings root {root:?}"),
             )
             .into());
         }
@@ -234,7 +247,7 @@ mod tests {
         assert!(!root.exists());
         let store = FileStore::new(&root).unwrap();
         assert!(root.exists());
-        assert_eq!(store.root(), root.as_path());
+        assert_eq!(store.root(), root);
     }
 
     #[test]
@@ -248,6 +261,19 @@ mod tests {
         let p = store.media_path("m1", "mix.wav").unwrap();
         assert!(p.ends_with("mix.wav"));
         assert_eq!(p.parent().unwrap(), dir);
+    }
+
+    #[test]
+    fn set_root_repoints_new_paths() {
+        let tmp = TempDir::new("repoint");
+        let store = FileStore::new(tmp.path.join("a")).unwrap();
+        assert!(store.media_path("m1", "rec.wav").unwrap().starts_with(tmp.path.join("a")));
+
+        let new_root = tmp.path.join("b");
+        store.set_root(&new_root).unwrap();
+        assert!(new_root.exists());
+        let p = store.media_path("m2", "rec.wav").unwrap();
+        assert!(p.starts_with(&new_root), "new recordings use the new root");
     }
 
     #[test]
