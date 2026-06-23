@@ -17,7 +17,10 @@ export function TrayMenu() {
   return (
     <div className="flex items-center gap-2">
       {!rec.isActive ? (
-        <Tooltip label={`Start recording (${SHORTCUTS.toggleRecording})`}>
+        <Tooltip
+          label={`Start recording (${SHORTCUTS.toggleRecording})`}
+          side="bottom"
+        >
           <Button variant="danger" size="sm" onClick={() => rec.start()}>
             ● Record
           </Button>
