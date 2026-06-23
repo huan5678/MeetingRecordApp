@@ -216,6 +216,11 @@ fn try_gemini(
             &created_at,
             template,
             &req.gemini_model,
+            // Per-chunk progress for long recordings (otherwise the UI sits at
+            // one percentage for minutes).
+            |fraction: f32, msg: &str| {
+                report(app, state, meeting_id, ProgressStage::Transcribing, fraction, msg.to_string());
+            },
         ))
         .map_err(|e| e.to_string())?;
 

@@ -16,8 +16,9 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::ai::gemini::GeminiProvider;
 use crate::ai::keychain;
-use crate::ai::provider::{AiError, Result, SummaryDraft, SummaryTemplate};
+use crate::ai::provider::{AiError, AiProvider, Result, SummaryDraft, SummaryTemplate};
 use crate::models::{ActionItem, AiProviderKind, KeyDecision, TranscriptSegment};
 
 const API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
@@ -29,6 +30,11 @@ pub const DEFAULT_MODEL: &str = "gemini-3.5-flash";
 /// Max output tokens for the Flash tier (gemini-3.5-flash et al.). We request
 /// the model maximum so long transcripts have the most room before truncating.
 const MAX_OUTPUT_TOKENS: u32 = 65_536;
+
+/// Length of each audio chunk for long recordings. A ~10-min verbatim Chinese
+/// transcript fits comfortably under the output ceiling; longer single calls
+/// truncate. Recordings beyond this are split into chunks of this many seconds.
+const CHUNK_SECONDS: u32 = 600;
 
 /// What one Gemini audio call yields: transcript rows + an auto-summary.
 pub struct GeminiAudioResult {
@@ -44,12 +50,26 @@ pub async fn transcribe_and_summarize(
     created_at: &str,
     template: SummaryTemplate,
     model: &str,
+    progress: impl Fn(f32, &str),
 ) -> Result<GeminiAudioResult> {
     let api_key = keychain::get_api_key(AiProviderKind::Gemini)
         .map_err(|e| AiError::Parse(format!("keychain error: {e}")))?
         .ok_or(AiError::MissingApiKey("gemini"))?;
 
     let client = reqwest::Client::new();
+
+    // A long recording's transcript exceeds the single-call output ceiling
+    // (65,536 tokens) no matter what — so split 16-bit WAV recordings into
+    // ~CHUNK_SECONDS pieces, transcribe each, then summarize the whole thing.
+    if needs_chunking(wav_path) {
+        return transcribe_chunked(
+            &client, &api_key, wav_path, meeting_id, created_at, template, model, &progress,
+        )
+        .await;
+    }
+
+    // Short audio / non-wav: one combined transcript + summary call.
+    progress(0.3, "Gemini 轉錄 + 摘要中…");
     let bytes =
         std::fs::read(wav_path).map_err(|e| AiError::Parse(format!("read wav: {e}")))?;
 
@@ -356,6 +376,244 @@ fn salvage_segments(text: &str) -> Vec<SegJson> {
     out
 }
 
+// ---- long-recording chunking ----------------------------------------------
+
+/// Whether `path` is a 16-bit PCM WAV longer than [`CHUNK_SECONDS`] — the case
+/// that must be split because its transcript can't fit one response.
+fn needs_chunking(path: &Path) -> bool {
+    let is_wav = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("wav"));
+    if !is_wav {
+        return false;
+    }
+    match hound::WavReader::open(path) {
+        Ok(reader) => {
+            let spec = reader.spec();
+            // hound's i16 sample reader only handles 16-bit integer PCM.
+            if spec.sample_format != hound::SampleFormat::Int || spec.bits_per_sample != 16 {
+                return false;
+            }
+            let frames = reader.len() as f64 / spec.channels.max(1) as f64;
+            frames / spec.sample_rate.max(1) as f64 > CHUNK_SECONDS as f64
+        }
+        Err(_) => false,
+    }
+}
+
+/// Transcribe a long WAV in [`CHUNK_SECONDS`] pieces (each its own Gemini call,
+/// with chunk-relative timestamps offset back to absolute), then summarize the
+/// assembled transcript in one text call (map-reduced for length).
+#[allow(clippy::too_many_arguments)]
+async fn transcribe_chunked(
+    client: &reqwest::Client,
+    api_key: &str,
+    wav_path: &Path,
+    meeting_id: &str,
+    created_at: &str,
+    template: SummaryTemplate,
+    model: &str,
+    progress: &impl Fn(f32, &str),
+) -> Result<GeminiAudioResult> {
+    let reader =
+        hound::WavReader::open(wav_path).map_err(|e| AiError::Parse(format!("open wav: {e}")))?;
+    let spec = reader.spec();
+    let total_samples = reader.len();
+    let per_chunk = (spec.sample_rate * spec.channels.max(1) as u32 * CHUNK_SECONDS).max(1);
+    let total_chunks = total_samples.div_ceil(per_chunk).max(1);
+
+    let mut samples = reader.into_samples::<i16>();
+    let mut all: Vec<TranscriptSegment> = Vec::new();
+    let mut language: Option<String> = None;
+    let tmp_dir = std::env::temp_dir();
+
+    for chunk_idx in 0..total_chunks {
+        let batch: Vec<i16> = samples
+            .by_ref()
+            .take(per_chunk as usize)
+            .map(|r| r.unwrap_or(0))
+            .collect();
+        if batch.is_empty() {
+            break;
+        }
+        progress(
+            0.1 + 0.8 * (chunk_idx as f32 / total_chunks as f32),
+            &format!("Gemini 轉錄第 {}/{} 段…", chunk_idx + 1, total_chunks),
+        );
+
+        let chunk_path = tmp_dir.join(format!("mra_{meeting_id}_{chunk_idx}.wav"));
+        write_wav(&chunk_path, spec, &batch)?;
+        let bytes =
+            std::fs::read(&chunk_path).map_err(|e| AiError::Parse(format!("read chunk: {e}")))?;
+        let uploaded = upload_audio(client, api_key, bytes, "audio/wav").await;
+        let _ = std::fs::remove_file(&chunk_path);
+        let file_uri = uploaded?;
+
+        let (lang, segs) = transcribe_chunk_call(client, api_key, model, file_uri).await?;
+        if language.is_none() {
+            language = lang;
+        }
+        let offset_ms = chunk_idx as i64 * CHUNK_SECONDS as i64 * 1000;
+        for s in segs {
+            all.push(TranscriptSegment {
+                id: uuid::Uuid::new_v4().to_string(),
+                meeting_id: meeting_id.to_string(),
+                segment_index: 0, // assigned after the loop
+                start_time_ms: s.start_ms + offset_ms,
+                end_time_ms: s.end_ms + offset_ms,
+                text: s.text.trim().to_string(),
+                speaker: s.speaker.filter(|sp| !sp.trim().is_empty()),
+                confidence: None,
+                language: language.clone(),
+                created_at: created_at.to_string(),
+            });
+        }
+    }
+
+    if all.is_empty() {
+        return Err(AiError::Parse("Gemini 未從音檔轉錄出任何內容".into()));
+    }
+    for (i, s) in all.iter_mut().enumerate() {
+        s.segment_index = i as i64;
+    }
+
+    progress(0.92, "彙整逐字稿、產生摘要中…");
+    let transcript = transcript_text(&all);
+    let summary = GeminiProvider::new(model)
+        .summarize(&transcript, template)
+        .await?;
+
+    Ok(GeminiAudioResult {
+        segments: all,
+        summary,
+        language,
+    })
+}
+
+/// One transcript-only Gemini call over an already-uploaded chunk.
+async fn transcribe_chunk_call(
+    client: &reqwest::Client,
+    api_key: &str,
+    model: &str,
+    file_uri: String,
+) -> Result<(Option<String>, Vec<SegJson>)> {
+    let body = GenerateContentRequest {
+        contents: vec![GContent {
+            role: "user",
+            parts: vec![
+                GPart::File {
+                    file_data: GFileData {
+                        mime_type: "audio/wav",
+                        file_uri,
+                    },
+                },
+                GPart::Text {
+                    text: build_transcript_prompt(),
+                },
+            ],
+        }],
+        generation_config: GGenConfig {
+            response_mime_type: "application/json",
+            max_output_tokens: MAX_OUTPUT_TOKENS,
+            thinking_config: ThinkingConfig { thinking_budget: 0 },
+        },
+    };
+    let url = format!("{API_BASE}/models/{model}:generateContent");
+    let resp = client
+        .post(&url)
+        .header("x-goog-api-key", api_key)
+        .json(&body)
+        .send()
+        .await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(AiError::Status {
+            status: status.as_u16(),
+            body: text.chars().take(512).collect(),
+        });
+    }
+    let parsed: GenerateContentResponse =
+        resp.json().await.map_err(|e| AiError::Parse(e.to_string()))?;
+    let candidate = parsed
+        .candidates
+        .into_iter()
+        .next()
+        .ok_or_else(|| AiError::Parse("no candidates in Gemini chunk response".into()))?;
+    let finish_reason = candidate.finish_reason.clone();
+    let text = candidate
+        .content
+        .map(|c| {
+            c.parts
+                .into_iter()
+                .filter_map(|p| p.text)
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .ok_or_else(|| AiError::Parse("no content in Gemini chunk response".into()))?;
+    parse_chunk(&text, finish_reason.as_deref())
+}
+
+/// Parse a transcript-only chunk response (language + segments), salvaging
+/// complete segments if the chunk itself got truncated.
+fn parse_chunk(text: &str, finish_reason: Option<&str>) -> Result<(Option<String>, Vec<SegJson>)> {
+    let trimmed = text.trim().trim_start_matches("```json").trim_matches('`').trim();
+    match serde_json::from_str::<ChunkJson>(trimmed) {
+        Ok(c) => Ok((c.language, c.segments)),
+        Err(e) => {
+            let segs = salvage_segments(trimmed);
+            if segs.is_empty() {
+                Err(AiError::Parse(format!(
+                    "Gemini chunk JSON parse: {e} (finishReason: {}; got: {})",
+                    finish_reason.unwrap_or("?"),
+                    trimmed.chars().take(200).collect::<String>()
+                )))
+            } else {
+                Ok((extract_language(trimmed), segs))
+            }
+        }
+    }
+}
+
+/// Write a chunk of 16-bit PCM samples to `path` with the source's spec.
+fn write_wav(path: &Path, spec: hound::WavSpec, samples: &[i16]) -> Result<()> {
+    let mut w =
+        hound::WavWriter::create(path, spec).map_err(|e| AiError::Parse(format!("create chunk wav: {e}")))?;
+    for &s in samples {
+        w.write_sample(s)
+            .map_err(|e| AiError::Parse(format!("write chunk wav: {e}")))?;
+    }
+    w.finalize()
+        .map_err(|e| AiError::Parse(format!("finalize chunk wav: {e}")))?;
+    Ok(())
+}
+
+/// Flatten segments into "speaker: text" lines for the summarization call.
+fn transcript_text(segments: &[TranscriptSegment]) -> String {
+    segments
+        .iter()
+        .map(|s| match &s.speaker {
+            Some(sp) => format!("{sp}: {}", s.text),
+            None => s.text.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Transcript-only prompt for a single chunk (timestamps relative to the clip).
+fn build_transcript_prompt() -> String {
+    "You are a meeting transcription assistant. The attached audio is ONE segment of a longer meeting recording.\n\
+     1) Transcribe it VERBATIM in Traditional Chinese (zh-TW, 繁體中文). Do NOT output Simplified characters.\n\
+     2) Identify distinct speakers and label each segment (e.g. \"講者 1\", \"講者 2\"); use null if unknown.\n\
+     3) Give millisecond start/end timestamps for each segment, RELATIVE TO THE START OF THIS CLIP (begin at 0).\n\
+     Respond with a SINGLE JSON object and nothing else (no prose, no code fence), with exactly these keys:\n\
+     \"language\": string (e.g. \"zh-TW\"),\n\
+     \"segments\": array of {\"start_ms\": integer, \"end_ms\": integer, \"speaker\": string|null, \"text\": string}.\n\
+     Do NOT include a summary."
+        .to_string()
+}
+
 /// Map a file extension to the audio MIME type Gemini understands. Covers the
 /// common meeting formats; unknown/extension-less files default to wav (the
 /// app's own recording format).
@@ -507,6 +765,15 @@ struct AudioJson {
     summary: SummaryJson,
 }
 
+/// Transcript-only chunk response (no summary).
+#[derive(Deserialize)]
+struct ChunkJson {
+    #[serde(default)]
+    language: Option<String>,
+    #[serde(default)]
+    segments: Vec<SegJson>,
+}
+
 #[derive(Deserialize)]
 struct SegJson {
     #[serde(default)]
@@ -606,5 +873,74 @@ mod tests {
         let json = "{\"language\":\"zh-TW\",\"segments\":[{\"start_ms\":0,\"end_ms";
         let err = parse_audio_response(json, "m", "now", "gemini-3.5-flash", None, Some("MAX_TOKENS"));
         assert!(err.is_err());
+    }
+
+    fn pcm16_spec(sample_rate: u32) -> hound::WavSpec {
+        hound::WavSpec {
+            channels: 1,
+            sample_rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        }
+    }
+
+    #[test]
+    fn write_wav_roundtrips_samples() {
+        let path = std::env::temp_dir().join("mra_test_roundtrip.wav");
+        write_wav(&path, pcm16_spec(16_000), &[1, -2, 3, -4]).unwrap();
+        let got: Vec<i16> = hound::WavReader::open(&path)
+            .unwrap()
+            .into_samples::<i16>()
+            .map(|s| s.unwrap())
+            .collect();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(got, vec![1, -2, 3, -4]);
+    }
+
+    #[test]
+    fn needs_chunking_thresholds() {
+        // ~1s @ 16k → under the threshold.
+        let short = std::env::temp_dir().join("mra_test_short.wav");
+        write_wav(&short, pcm16_spec(16_000), &vec![0i16; 16_000]).unwrap();
+        assert!(!needs_chunking(&short));
+        let _ = std::fs::remove_file(&short);
+
+        // 601 frames @ 1 Hz = 601s > CHUNK_SECONDS — a tiny file that still
+        // crosses the duration threshold, so we don't write megabytes in a test.
+        let long = std::env::temp_dir().join("mra_test_long.wav");
+        write_wav(&long, pcm16_spec(1), &vec![0i16; (CHUNK_SECONDS + 1) as usize]).unwrap();
+        assert!(needs_chunking(&long));
+        let _ = std::fs::remove_file(&long);
+
+        // Non-wav is never chunked here (Gemini decodes it whole).
+        assert!(!needs_chunking(Path::new("foo.mp3")));
+    }
+
+    #[test]
+    fn parse_chunk_salvages_truncated() {
+        let json = "{\"language\":\"zh-TW\",\"segments\":[\
+            {\"start_ms\":0,\"end_ms\":100,\"speaker\":null,\"text\":\"嗨\"},{\"start_ms\":100,\"end_ms";
+        let (lang, segs) = parse_chunk(json, Some("MAX_TOKENS")).unwrap();
+        assert_eq!(lang.as_deref(), Some("zh-TW"));
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].text, "嗨");
+    }
+
+    #[test]
+    fn transcript_text_joins_speaker_lines() {
+        let seg = |text: &str, speaker: Option<&str>| TranscriptSegment {
+            id: "x".into(),
+            meeting_id: "m".into(),
+            segment_index: 0,
+            start_time_ms: 0,
+            end_time_ms: 1,
+            text: text.into(),
+            speaker: speaker.map(str::to_string),
+            confidence: None,
+            language: None,
+            created_at: String::new(),
+        };
+        let out = transcript_text(&[seg("你好", Some("講者 1")), seg("再見", None)]);
+        assert_eq!(out, "講者 1: 你好\n再見");
     }
 }
