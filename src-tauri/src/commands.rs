@@ -516,7 +516,10 @@ pub fn delete_transcript_run(
 /// Clear every transcript run (and its segments) for a meeting at once.
 #[tauri::command]
 pub fn clear_transcripts(state: State<'_, AppState>, meeting_id: String) -> Result<(), String> {
-    lock_db(&state)?.clear_transcripts(&meeting_id).map_err(err)
+    lock_db(&state)?.clear_transcripts(&meeting_id).map_err(err)?;
+    // Drop the now-stale transcript sidecar (summaries, hence summary.md, stay).
+    let _ = std::fs::remove_file(state.files.meeting_dir(&meeting_id).join("transcript.md"));
+    Ok(())
 }
 
 /// Delete one summary.
@@ -921,6 +924,7 @@ pub async fn generate_summary(
     {
         let db = lock_db(&state)?;
         db.insert_summary(&summary).map_err(err)?;
+        write_meeting_sidecars(&db, &state.files, &meeting_id);
     }
     Ok(summary)
 }
@@ -1157,6 +1161,17 @@ pub fn migrate_recordings(state: State<'_, AppState>) -> Result<MigrateResultDto
         }
     }
 
+    // Write transcript.md / summary.md next to each meeting's audio so the
+    // relocated folders are self-contained, not just the wav.
+    {
+        let db = lock_db(&state)?;
+        if let Ok(meetings) = db.list_meetings() {
+            for m in meetings {
+                write_meeting_sidecars(&db, &state.files, &m.id);
+            }
+        }
+    }
+
     Ok(MigrateResultDto {
         moved,
         skipped,
@@ -1176,6 +1191,71 @@ fn move_file(src: &std::path::Path, dest: &std::path::Path) -> std::io::Result<(
             std::fs::remove_file(src)
         }
     }
+}
+
+/// Write human-readable `transcript.md` + `summary.md` next to a meeting's audio
+/// so its folder is self-contained (transcripts/summaries otherwise live only in
+/// the DB). Best-effort: a write failure is ignored. Called whenever a
+/// transcript or summary changes, and when recordings are relocated.
+pub(crate) fn write_meeting_sidecars(db: &Database, files: &FileStore, meeting_id: &str) {
+    let Ok(Some(meeting)) = db.get_meeting(meeting_id) else {
+        return;
+    };
+    let Ok(dir) = files.ensure_meeting_dir(meeting_id) else {
+        return;
+    };
+
+    let segments = db.list_transcript_segments(meeting_id).unwrap_or_default();
+    if !segments.is_empty() {
+        let md = crate::export::markdown::to_markdown(&meeting, &segments, None);
+        let _ = std::fs::write(dir.join("transcript.md"), md);
+    }
+
+    let summary = db
+        .list_summaries(meeting_id)
+        .ok()
+        .and_then(|v| v.into_iter().next());
+    if let Some(s) = &summary {
+        let _ = std::fs::write(dir.join("summary.md"), summary_markdown(&meeting, s));
+    }
+}
+
+/// A standalone Markdown document for a meeting's summary (content + decisions +
+/// action items). `Summary.content` is already Markdown; we frame it and append
+/// the structured lists.
+fn summary_markdown(meeting: &Meeting, s: &Summary) -> String {
+    let title = meeting.title.as_deref().unwrap_or("Untitled Meeting");
+    let mut out = format!("# Summary: {title}\n\n{}\n", s.content.trim());
+
+    if !s.key_decisions.is_empty() {
+        out.push_str("\n## Key Decisions\n\n");
+        for d in &s.key_decisions {
+            out.push_str(&format!("- {}", d.decision));
+            if let Some(c) = &d.context {
+                out.push_str(&format!(" — {c}"));
+            }
+            out.push('\n');
+        }
+    }
+
+    if !s.action_items.is_empty() {
+        out.push_str("\n## Action Items\n\n");
+        for a in &s.action_items {
+            out.push_str(&format!("- [{}] {}", if a.done { "x" } else { " " }, a.task));
+            let mut meta = Vec::new();
+            if let Some(o) = &a.owner {
+                meta.push(format!("@{o}"));
+            }
+            if let Some(dl) = &a.deadline {
+                meta.push(format!("due {dl}"));
+            }
+            if !meta.is_empty() {
+                out.push_str(&format!(" ({})", meta.join(", ")));
+            }
+            out.push('\n');
+        }
+    }
+    out
 }
 
 // ===========================================================================
@@ -1327,6 +1407,75 @@ mod tests {
         assert_eq!(&s[7..8], "-");
         assert_eq!(&s[10..11], " ");
         assert_eq!(&s[13..14], ":");
+    }
+
+    #[test]
+    fn sidecars_written_for_transcript_and_summary() {
+        use crate::models::{ActionItem, KeyDecision, Summary, SummaryType, TranscriptRun};
+        let st = state();
+        {
+            let db = st.db.lock().unwrap();
+            db.insert_meeting(&Meeting {
+                id: "m1".into(),
+                title: Some("Sync".into()),
+                start_time: now_iso8601(),
+                end_time: None,
+                duration_seconds: Some(60),
+                status: MeetingStatus::Completed,
+                tags: vec![],
+                meeting_type: None,
+                created_at: String::new(),
+                updated_at: String::new(),
+            })
+            .unwrap();
+            db.insert_transcript_run(&TranscriptRun {
+                id: "r1".into(),
+                meeting_id: "m1".into(),
+                engine: "gemini".into(),
+                model: "gemini-3.5-flash".into(),
+                language: Some("zh-TW".into()),
+                created_at: String::new(),
+                segment_count: 0,
+            })
+            .unwrap();
+            db.insert_transcript_segments(
+                &[seg("s1", "m1", 0, "大家好", Some("講者 1"))],
+                Some("r1"),
+            )
+            .unwrap();
+            db.insert_summary(&Summary {
+                id: "sum1".into(),
+                meeting_id: "m1".into(),
+                summary_type: SummaryType::Auto,
+                content: "# 摘要\n重點".into(),
+                action_items: vec![ActionItem {
+                    task: "寫文件".into(),
+                    owner: Some("Alice".into()),
+                    deadline: None,
+                    done: false,
+                }],
+                key_decisions: vec![KeyDecision {
+                    decision: "採用 Tauri".into(),
+                    context: None,
+                }],
+                prompt_used: None,
+                ai_provider: None,
+                ai_model: None,
+                tokens_used: None,
+                created_at: String::new(),
+            })
+            .unwrap();
+
+            write_meeting_sidecars(&db, &st.files, "m1");
+        }
+
+        let dir = st.files.meeting_dir("m1");
+        let transcript = std::fs::read_to_string(dir.join("transcript.md")).unwrap();
+        assert!(transcript.contains("大家好"));
+        let summary = std::fs::read_to_string(dir.join("summary.md")).unwrap();
+        assert!(summary.contains("重點"));
+        assert!(summary.contains("寫文件"));
+        assert!(summary.contains("採用 Tauri"));
     }
 
     #[test]

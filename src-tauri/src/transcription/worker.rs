@@ -252,6 +252,8 @@ fn try_gemini(
         };
         let _ = db.insert_summary(&summary);
         let _ = db.set_meeting_status(meeting_id, MeetingStatus::Completed);
+        // Write transcript.md / summary.md next to the audio.
+        crate::commands::write_meeting_sidecars(&db, &state.files, meeting_id);
     }
 
     let msg = format!("{n} segments + summary (Gemini)");
@@ -382,6 +384,7 @@ fn run_whisper(
                 let _ = db.insert_transcript_run(&run);
                 let _ = db.insert_transcript_segments(&segments, Some(&run.id));
                 let _ = db.set_meeting_status(&meeting_id, MeetingStatus::Completed);
+                crate::commands::write_meeting_sidecars(&db, &state.files, &meeting_id);
             }
             let msg = format!("{} segments", segments.len());
             if let Ok(mut map) = state.transcription.lock() {
