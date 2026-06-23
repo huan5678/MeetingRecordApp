@@ -663,6 +663,12 @@ pub fn retranscribe_meeting(
         db.set_meeting_status(&meeting_id, MeetingStatus::Transcribing)
             .map_err(err)?;
     }
+    // Drop any leftover progress entry from a previous run; otherwise the
+    // frontend's status poll would read a stale terminal "done"/"error" and
+    // never observe this new run.
+    if let Ok(mut map) = state.transcription.lock() {
+        map.remove(&meeting_id);
+    }
 
     // Drive transcription on a worker thread (Gemini multimodal or local whisper,
     // per settings + any per-call overrides) so it can stream progress without

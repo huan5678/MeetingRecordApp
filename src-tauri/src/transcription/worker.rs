@@ -471,6 +471,7 @@ fn download_model(
 
 /// Terminal failure: mark the meeting errored + report the message.
 fn finish_error(app: &AppHandle, state: &State<'_, AppState>, meeting_id: &str, message: String) {
+    eprintln!("[transcription] meeting {meeting_id} failed: {message}");
     if let Ok(db) = state.db.lock() {
         let _ = db.set_meeting_status(meeting_id, MeetingStatus::Error);
     }

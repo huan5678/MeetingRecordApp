@@ -24,6 +24,12 @@ export function useTranscription(
   meetingId: string | null,
   /** Set false to disable polling (e.g. when the detail view is hidden). */
   active = true,
+  /**
+   * Bump to restart polling even though meetingId/active are unchanged — e.g.
+   * after re-transcribing a meeting that had already settled (terminal), so the
+   * poll loop, which had stopped, picks up the new run.
+   */
+  restartKey: unknown = 0,
 ): UseTranscriptionResult {
   const [status, setStatus] = useState<TranscriptionStatusDto | null>(null);
   const [loading, setLoading] = useState(false);
@@ -65,7 +71,7 @@ export function useTranscription(
       cancelled = true;
       clear();
     };
-  }, [meetingId, active]);
+  }, [meetingId, active, restartKey]);
 
   return { status, loading, error };
 }
