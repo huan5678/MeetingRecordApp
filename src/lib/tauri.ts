@@ -214,8 +214,11 @@ export const api = {
   }) => call<CostEstimateDto>(COMMANDS.estimateSummaryCost, opts),
 
   // --- export ---
-  exportMeeting: (opts: { meetingId: string; format: ExportFormat }) =>
-    call<string>(COMMANDS.exportMeeting, opts),
+  exportMeeting: (opts: {
+    meetingId: string;
+    format: ExportFormat;
+    dest?: string;
+  }) => call<string>(COMMANDS.exportMeeting, opts),
 
   // --- settings ---
   getSettings: () => call<Record<string, string>>(COMMANDS.getSettings),

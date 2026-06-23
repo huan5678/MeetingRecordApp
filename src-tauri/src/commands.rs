@@ -517,8 +517,10 @@ pub fn delete_transcript_run(
 #[tauri::command]
 pub fn clear_transcripts(state: State<'_, AppState>, meeting_id: String) -> Result<(), String> {
     lock_db(&state)?.clear_transcripts(&meeting_id).map_err(err)?;
-    // Drop the now-stale transcript sidecar (summaries, hence summary.md, stay).
-    let _ = std::fs::remove_file(state.files.meeting_dir(&meeting_id).join("transcript.md"));
+    // Drop the now-stale transcript sidecars (summaries, hence summary.md, stay).
+    let dir = state.files.meeting_dir(&meeting_id);
+    let _ = std::fs::remove_file(dir.join("transcript.md"));
+    let _ = std::fs::remove_file(dir.join("transcript.srt"));
     Ok(())
 }
 
@@ -978,6 +980,9 @@ pub fn export_meeting(
     state: State<'_, AppState>,
     meeting_id: String,
     format: String,
+    // User-chosen destination (from the Save dialog). When absent, fall back to
+    // a file inside the meeting's media dir (legacy behaviour).
+    dest: Option<String>,
 ) -> Result<String, String> {
     let fmt = parse_export_format(&format)?;
 
@@ -994,11 +999,13 @@ pub fn export_meeting(
 
     let rendered = render_export(fmt, &meeting, &segments, summary.as_ref())?;
 
-    let file_name = format!("export.{}", fmt.extension());
-    let path: PathBuf = state
-        .files
-        .media_path(&meeting_id, &file_name)
-        .map_err(err)?;
+    let path: PathBuf = match dest {
+        Some(d) if !d.trim().is_empty() => PathBuf::from(d),
+        _ => state
+            .files
+            .media_path(&meeting_id, &format!("export.{}", fmt.extension()))
+            .map_err(err)?,
+    };
     std::fs::write(&path, rendered).map_err(err)?;
     Ok(path.to_string_lossy().into_owned())
 }
@@ -1209,6 +1216,8 @@ pub(crate) fn write_meeting_sidecars(db: &Database, files: &FileStore, meeting_i
     if !segments.is_empty() {
         let md = crate::export::markdown::to_markdown(&meeting, &segments, None);
         let _ = std::fs::write(dir.join("transcript.md"), md);
+        // SRT subtitle alongside, for video editors / players.
+        let _ = std::fs::write(dir.join("transcript.srt"), crate::export::to_srt(&segments));
     }
 
     let summary = db

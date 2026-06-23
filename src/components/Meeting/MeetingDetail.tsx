@@ -200,6 +200,7 @@ export function MeetingDetail() {
       <ExportDialog
         open={exporting}
         meetingId={meeting.id}
+        title={meetingTitle(meeting.title, meeting.start_time)}
         onClose={() => setExporting(false)}
       />
     </div>
