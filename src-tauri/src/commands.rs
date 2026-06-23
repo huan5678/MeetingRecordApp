@@ -198,6 +198,17 @@ pub struct StorageUsageDto {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MigrateResultDto {
+    /// Files relocated into the current storage folder.
+    pub moved: usize,
+    /// Already in place / source file missing.
+    pub skipped: usize,
+    /// Failed to move (kept where they were; DB unchanged).
+    pub failed: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CostEstimateDto {
     pub provider: String,
     pub model: String,
@@ -1100,6 +1111,71 @@ pub fn get_storage_usage(state: State<'_, AppState>) -> Result<StorageUsageDto, 
         total_bytes,
         meeting_count,
     })
+}
+
+/// Move every existing recording into the current storage folder (the one set
+/// in Settings) and update its DB path. Uses rename, falling back to copy+delete
+/// across volumes; the DB row is only re-pointed after the move succeeds.
+#[tauri::command]
+pub fn migrate_recordings(state: State<'_, AppState>) -> Result<MigrateResultDto, String> {
+    let media = {
+        let db = lock_db(&state)?;
+        db.list_all_media_files().map_err(err)?
+    };
+    let (mut moved, mut skipped, mut failed) = (0usize, 0usize, 0usize);
+
+    for m in media {
+        let src = PathBuf::from(&m.file_path);
+        let Some(name) = src.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+            skipped += 1;
+            continue;
+        };
+        // Destination under the current (configured) recordings root.
+        let dest = match state.files.media_path(&m.meeting_id, &name) {
+            Ok(d) => d,
+            Err(_) => {
+                failed += 1;
+                continue;
+            }
+        };
+        if !src.exists() || src == dest {
+            skipped += 1;
+            continue;
+        }
+        match move_file(&src, &dest) {
+            Ok(()) => {
+                let db = lock_db(&state)?;
+                db.update_media_file_path(&m.id, &dest.to_string_lossy())
+                    .map_err(err)?;
+                // Best-effort: drop the now-empty old meeting directory.
+                if let Some(old_dir) = src.parent() {
+                    let _ = std::fs::remove_dir(old_dir);
+                }
+                moved += 1;
+            }
+            Err(_) => failed += 1,
+        }
+    }
+
+    Ok(MigrateResultDto {
+        moved,
+        skipped,
+        failed,
+    })
+}
+
+/// Move a file, falling back to copy+delete when `rename` can't cross volumes.
+fn move_file(src: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match std::fs::rename(src, dest) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            std::fs::copy(src, dest)?;
+            std::fs::remove_file(src)
+        }
+    }
 }
 
 // ===========================================================================

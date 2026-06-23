@@ -251,6 +251,36 @@ impl Database {
         Ok(out)
     }
 
+    /// Every media file across all meetings (drives the "move recordings" tool).
+    pub fn list_all_media_files(&self) -> Result<Vec<MediaFile>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, meeting_id, file_type, file_path, file_size_bytes,
+                    format, duration_seconds, created_at
+             FROM media_files ORDER BY created_at ASC, rowid ASC",
+        )?;
+        let rows = stmt.query_map([], row_to_media_file)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r??);
+        }
+        Ok(out)
+    }
+
+    /// Point a media file row at a new on-disk path (after relocating the file).
+    pub fn update_media_file_path(&self, id: &str, new_path: &str) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE media_files SET file_path = ?2 WHERE id = ?1",
+            rusqlite::params![id, new_path],
+        )?;
+        if n == 0 {
+            return Err(StorageError::NotFound {
+                entity: "media_file",
+                id: id.to_string(),
+            });
+        }
+        Ok(())
+    }
+
     // -- transcript_segments ------------------------------------------------
 
     /// Insert one segment. The `AFTER INSERT` trigger mirrors it into

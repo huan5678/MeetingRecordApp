@@ -104,6 +104,7 @@ pub fn run() {
             commands::has_api_key,
             // storage
             commands::get_storage_usage,
+            commands::migrate_recordings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

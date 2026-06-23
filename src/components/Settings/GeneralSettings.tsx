@@ -9,6 +9,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { api, isTauri, type StorageUsageDto } from "@/lib/tauri";
 import { Field, Row, Toggle } from "@/components/Settings/controls";
+import { Button } from "@/components/common/Button";
 import { formatBytes } from "@/lib/format";
 import { THEMES, type Theme, SHORTCUTS } from "@/lib/constants";
 
@@ -21,12 +22,30 @@ export function GeneralSettings() {
   const setField = useSettingsStore((s) => s.setField);
 
   const [usage, setUsage] = useState<StorageUsageDto | null>(null);
-  useEffect(() => {
+  const refreshUsage = () =>
     void api
       .getStorageUsage()
       .then(setUsage)
       .catch(() => setUsage(null));
-  }, []);
+  useEffect(refreshUsage, []);
+
+  const [migrating, setMigrating] = useState(false);
+  const [migrateMsg, setMigrateMsg] = useState<string | null>(null);
+  const migrate = async () => {
+    setMigrating(true);
+    setMigrateMsg(null);
+    try {
+      const r = await api.migrateRecordings();
+      setMigrateMsg(
+        `已搬移 ${r.moved} 筆,略過 ${r.skipped} 筆${r.failed ? `,失敗 ${r.failed} 筆` : ""}。`,
+      );
+      refreshUsage();
+    } catch (e) {
+      setMigrateMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setMigrating(false);
+    }
+  };
 
   return (
     <div className="space-y-5">
@@ -91,6 +110,20 @@ export function GeneralSettings() {
             >
               Browse…
             </button>
+          )}
+        </div>
+        <div className="mt-2 flex items-center gap-3">
+          <Button
+            variant="secondary"
+            onClick={() => void migrate()}
+            disabled={migrating || !storageDir}
+          >
+            {migrating ? "搬移中…" : "把既有錄音搬到這裡"}
+          </Button>
+          {migrateMsg && (
+            <span className="text-xs text-gray-500 dark:text-gray-400">
+              {migrateMsg}
+            </span>
           )}
         </div>
       </Field>

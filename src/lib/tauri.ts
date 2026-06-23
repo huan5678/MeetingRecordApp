@@ -61,6 +61,7 @@ export const COMMANDS = {
   hasApiKey: "has_api_key",
   // storage
   getStorageUsage: "get_storage_usage",
+  migrateRecordings: "migrate_recordings",
 } as const;
 
 /** True when running inside the Tauri webview (the `__TAURI_INTERNALS__` glue). */
@@ -138,6 +139,12 @@ export interface TranscriptionStatusDto {
 export interface StorageUsageDto {
   totalBytes: number;
   meetingCount: number;
+}
+
+export interface MigrateResultDto {
+  moved: number;
+  skipped: number;
+  failed: number;
 }
 
 export interface CostEstimateDto {
@@ -222,6 +229,9 @@ export const api = {
 
   // --- storage ---
   getStorageUsage: () => call<StorageUsageDto>(COMMANDS.getStorageUsage),
+  /** Relocate all existing recordings into the current storage folder. */
+  migrateRecordings: () =>
+    call<MigrateResultDto>(COMMANDS.migrateRecordings),
 };
 
 // ---------------------------------------------------------------------------
@@ -259,6 +269,8 @@ async function mockInvoke<T>(
         totalBytes: MOCK_MEETINGS.length * 98 * 1024 * 1024,
         meetingCount: MOCK_MEETINGS.length,
       } as unknown as T;
+    case COMMANDS.migrateRecordings:
+      return { moved: 0, skipped: MOCK_MEETINGS.length, failed: 0 } as unknown as T;
     case COMMANDS.hasApiKey:
       return false as unknown as T;
     case COMMANDS.getSettings:
