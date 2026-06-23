@@ -19,7 +19,7 @@ import { SummaryView } from "@/components/Summary/SummaryView";
 import { ExportDialog } from "@/components/Export/ExportDialog";
 import { Button } from "@/components/common/Button";
 import { api } from "@/lib/tauri";
-import { formatDateTime, formatDuration } from "@/lib/format";
+import { formatDateTime, formatDuration, meetingTitle } from "@/lib/format";
 import {
   GEMINI_TRANSCRIBE_MODELS,
   MEETING_STATUS,
@@ -36,15 +36,25 @@ export function MeetingDetail() {
   const meetingId = useRecordingStore((s) => s.selectedMeetingId);
   const navigate = useRecordingStore((s) => s.navigate);
   const { detail, loading, error, reload } = useMeetingDetail(meetingId);
-  const transcription = useTranscription(meetingId, !!detail);
+  // `txNonce` restarts the status poll after a re-transcribe of an already
+  // settled meeting (whose poll loop had stopped at a terminal stage).
+  const [txNonce, setTxNonce] = useState(0);
+  const transcription = useTranscription(meetingId, !!detail, txNonce);
   const [tab, setTab] = useState<Tab>("summary");
   const [exporting, setExporting] = useState(false);
+  const [titleEditing, setTitleEditing] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
 
-  // Reload the detail once when a (re)transcription finishes so the new
-  // run/summary appears without a manual refresh.
+  const onTranscribeStarted = () => {
+    setTxNonce((n) => n + 1);
+    void reload();
+  };
+
+  // Reload the detail when a (re)transcription settles so the new run/summary
+  // (or the error) is reflected without a manual refresh.
   const stage = transcription.status?.stage;
   useEffect(() => {
-    if (stage === "done") void reload();
+    if (stage === "done" || stage === "error") void reload();
   }, [stage, reload]);
 
   if (!meetingId) {
@@ -65,6 +75,17 @@ export function MeetingDetail() {
   }
 
   const { meeting, media, segments, runs, summaries } = detail;
+
+  const beginEditTitle = () => {
+    setTitleDraft(meeting.title ?? "");
+    setTitleEditing(true);
+  };
+  const saveTitle = async () => {
+    setTitleEditing(false);
+    await api.updateMeeting(meeting.id, { title: titleDraft.trim() }).catch(() => {});
+    void reload();
+  };
+
   const stillTranscribing =
     meeting.status === MEETING_STATUS.Transcribing ||
     transcription.status?.stage === "transcribing" ||
@@ -82,9 +103,31 @@ export function MeetingDetail() {
           >
             ← History
           </Button>
-          <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
-            {meeting.title ?? "Untitled meeting"}
-          </h1>
+          {titleEditing ? (
+            <input
+              autoFocus
+              value={titleDraft}
+              placeholder={formatDateTime(meeting.start_time)}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onBlur={() => void saveTitle()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void saveTitle();
+                if (e.key === "Escape") setTitleEditing(false);
+              }}
+              className="w-full rounded-md border border-gray-300 bg-white px-2 py-1 text-xl font-semibold text-gray-900 focus:border-blue-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+            />
+          ) : (
+            <h1
+              onClick={beginEditTitle}
+              title="點擊以重新命名"
+              className="cursor-text text-xl font-semibold text-gray-900 hover:opacity-80 dark:text-gray-100"
+            >
+              {meetingTitle(meeting.title, meeting.start_time)}
+              <span className="ml-2 align-middle text-xs font-normal text-gray-400">
+                ✎
+              </span>
+            </h1>
+          )}
           <p className="text-sm text-gray-500 dark:text-gray-400">
             {formatDateTime(meeting.start_time)} ·{" "}
             {formatDuration(meeting.duration_seconds)}
@@ -105,6 +148,15 @@ export function MeetingDetail() {
           {transcription.status
             ? `${Math.round(transcription.status.progress * 100)}%`
             : ""}
+        </div>
+      )}
+
+      {transcription.status?.stage === "error" && (
+        <div
+          className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-300"
+          role="alert"
+        >
+          轉錄失敗:{transcription.status.message ?? "未知錯誤"}
         </div>
       )}
 
@@ -134,6 +186,7 @@ export function MeetingDetail() {
             runs={runs}
             readOnlyBase={stillTranscribing}
             onChanged={() => void reload()}
+            onTranscribeStarted={onTranscribeStarted}
           />
         )}
       </div>
@@ -160,12 +213,14 @@ function TranscriptTab({
   runs,
   readOnlyBase,
   onChanged,
+  onTranscribeStarted,
 }: {
   meetingId: string;
   latestSegments: TranscriptSegment[];
   runs: TranscriptRun[];
   readOnlyBase: boolean;
   onChanged: () => void;
+  onTranscribeStarted: () => void;
 }) {
   const latestRunId = runs[0]?.id ?? null;
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
@@ -218,7 +273,7 @@ function TranscriptTab({
         </div>
       )}
 
-      <RetranscribePanel meetingId={meetingId} onStarted={onChanged} />
+      <RetranscribePanel meetingId={meetingId} onStarted={onTranscribeStarted} />
 
       <Transcript segments={shown} readOnly={readOnlyBase || !isLatest} />
     </div>

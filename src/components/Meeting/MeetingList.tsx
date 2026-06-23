@@ -9,7 +9,7 @@ import { useMeetings } from "@/hooks/useMeetings";
 import { useRecordingStore } from "@/stores/recordingStore";
 import { Button } from "@/components/common/Button";
 import { api, isTauri } from "@/lib/tauri";
-import { formatDateTime, formatDuration } from "@/lib/format";
+import { formatDateTime, formatDuration, meetingTitle } from "@/lib/format";
 import {
   MEETING_STATUS,
   MEETING_TYPE_LABELS,
@@ -142,7 +142,7 @@ export function MeetingList() {
             meeting={m}
             onOpen={() => openMeeting(m.id)}
             onDelete={() => {
-              const name = m.title ?? "Untitled meeting";
+              const name = meetingTitle(m.title, m.start_time);
               if (
                 window.confirm(
                   `Delete “${name}”? This removes its recording and transcript and cannot be undone.`,
@@ -177,7 +177,7 @@ function MeetingRow({
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className="truncate font-medium text-gray-900 dark:text-gray-100">
-              {meeting.title ?? "Untitled meeting"}
+              {meetingTitle(meeting.title, meeting.start_time)}
             </span>
             {meeting.meeting_type && (
               <span className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-400">
