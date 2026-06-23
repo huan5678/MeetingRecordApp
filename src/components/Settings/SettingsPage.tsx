@@ -20,21 +20,24 @@ export function SettingsPage() {
   const [tab, setTab] = useState<Tab>("audio");
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-3xl flex-col gap-6 p-6">
-      <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
-        Settings
-      </h1>
+    <div className="mx-auto flex h-full w-full max-w-2xl flex-col gap-6 px-8 pt-8">
+      <div>
+        <span className="eyebrow">Preferences</span>
+        <h1 className="mt-2 font-display text-2xl font-medium tracking-tight text-fg">
+          Settings
+        </h1>
+      </div>
 
-      <nav className="flex gap-1 border-b border-gray-200 dark:border-gray-800">
+      <nav className="flex gap-6 border-b border-line">
         {TABS.map((t) => (
           <button
             key={t.id}
             type="button"
             onClick={() => setTab(t.id)}
-            className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
+            className={`eyebrow -mb-px border-b-2 py-3 transition-colors ${
               tab === t.id
-                ? "border-blue-600 text-blue-600 dark:text-blue-400"
-                : "border-transparent text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
+                ? "border-fg text-fg"
+                : "border-transparent text-faint hover:text-fg"
             }`}
           >
             {t.label}
@@ -42,7 +45,7 @@ export function SettingsPage() {
         ))}
       </nav>
 
-      <div className="flex-1 overflow-auto pb-6">
+      <div className="flex-1 overflow-auto pb-8">
         {tab === "audio" && <AudioSettings />}
         {tab === "ai" && <AISettings />}
         {tab === "general" && <GeneralSettings />}

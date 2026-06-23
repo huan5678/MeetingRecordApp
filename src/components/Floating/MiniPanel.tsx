@@ -19,20 +19,18 @@ export function MiniPanel() {
   if (!rec.isActive) return null;
 
   return (
-    <div className="fixed bottom-4 right-4 z-40 w-72 rounded-xl border border-gray-200 bg-white/95 p-3 shadow-2xl backdrop-blur dark:border-gray-700 dark:bg-gray-900/95">
-      <div className="mb-2 flex items-center justify-between">
+    <div className="fixed bottom-4 right-4 z-40 w-72 border border-line-strong bg-bg/95 p-4 shadow-2xl backdrop-blur">
+      <div className="mb-3 flex items-baseline justify-between">
         <div className="flex items-center gap-2">
           <span
-            className={`h-2.5 w-2.5 rounded-full ${
-              rec.isRecording ? "animate-pulse bg-recording" : "bg-amber-500"
+            className={`h-1.5 w-1.5 rounded-full ${
+              rec.isRecording ? "animate-pulse bg-fg" : "border border-fg"
             }`}
             aria-hidden
           />
-          <span className="text-xs font-medium text-gray-600 dark:text-gray-300">
-            {rec.isRecording ? "Recording" : "Paused"}
-          </span>
+          <span className="eyebrow">{rec.isRecording ? "Recording" : "Paused"}</span>
         </div>
-        <span className="font-mono text-sm tabular-nums text-gray-900 dark:text-gray-100">
+        <span className="num text-base text-fg">
           {formatClock(rec.elapsedSeconds)}
         </span>
       </div>

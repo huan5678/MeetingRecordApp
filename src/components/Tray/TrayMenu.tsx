@@ -42,7 +42,7 @@ export function TrayMenu() {
         </>
       )}
 
-      <span className="mx-1 h-5 w-px bg-gray-200 dark:bg-gray-700" aria-hidden />
+      <span className="mx-1 h-5 w-px bg-line" aria-hidden />
 
       <Button
         variant="ghost"

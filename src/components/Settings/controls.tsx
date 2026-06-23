@@ -17,13 +17,9 @@ export function Field({
 }) {
   return (
     <div>
-      <label className="block text-sm font-medium text-gray-800 dark:text-gray-200">
-        {label}
-      </label>
-      {hint && (
-        <p className="mb-1.5 text-xs text-gray-500 dark:text-gray-400">{hint}</p>
-      )}
-      <div className={hint ? "" : "mt-1.5"}>{children}</div>
+      <label className="block text-sm font-medium text-fg">{label}</label>
+      {hint && <p className="mb-2 mt-0.5 text-xs text-muted">{hint}</p>}
+      <div className={hint ? "" : "mt-2"}>{children}</div>
     </div>
   );
 }
@@ -41,12 +37,8 @@ export function Row({
   return (
     <div className="flex items-center justify-between gap-4">
       <div>
-        <p className="text-sm font-medium text-gray-800 dark:text-gray-200">
-          {label}
-        </p>
-        {hint && (
-          <p className="text-xs text-gray-500 dark:text-gray-400">{hint}</p>
-        )}
+        <p className="text-sm font-medium text-fg">{label}</p>
+        {hint && <p className="mt-0.5 text-xs text-muted">{hint}</p>}
       </div>
       <div className="shrink-0">{children}</div>
     </div>
@@ -70,12 +62,12 @@ export function Toggle({
       aria-checked={checked}
       aria-label={label}
       onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-        checked ? "bg-blue-600" : "bg-gray-300 dark:bg-gray-600"
+      className={`relative inline-flex h-6 w-11 items-center transition-colors ${
+        checked ? "bg-fg" : "bg-line-strong"
       }`}
     >
       <span
-        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+        className={`inline-block h-4 w-4 transform bg-bg transition-transform ${
           checked ? "translate-x-6" : "translate-x-1"
         }`}
       />

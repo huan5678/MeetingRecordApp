@@ -25,9 +25,9 @@ export function Tooltip({ label, children, side = "top" }: TooltipProps) {
         role="tooltip"
         className={
           `pointer-events-none absolute left-1/2 z-50 -translate-x-1/2 ${pos} ` +
-          "whitespace-nowrap rounded bg-gray-900 px-2 py-1 text-xs text-white " +
-          "opacity-0 shadow transition-opacity group-hover:opacity-100 " +
-          "group-focus-within:opacity-100 dark:bg-gray-700"
+          "whitespace-nowrap bg-fg px-2 py-1 text-[11px] text-bg " +
+          "opacity-0 shadow-lg transition-opacity group-hover:opacity-100 " +
+          "group-focus-within:opacity-100"
         }
       >
         {label}

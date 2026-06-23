@@ -46,22 +46,23 @@ export default function App() {
   }, [rec]);
 
   return (
-    <div className="flex h-full flex-col bg-white text-gray-900 dark:bg-gray-950 dark:text-gray-100">
-      <header className="flex items-center justify-between gap-4 border-b border-gray-200 px-6 py-3 dark:border-gray-800">
+    <div className="flex h-full flex-col bg-bg text-fg">
+      <header className="flex items-center justify-between gap-4 border-b border-line bg-bg px-6 py-3.5">
         <button
           type="button"
           onClick={() => useRecordingStore.getState().navigate(VIEWS.Meetings)}
-          className="flex items-center gap-3 text-left"
+          className="group flex flex-col items-start gap-1 text-left"
         >
-          <div>
-            <h1 className="text-base font-semibold">MeetingRecordApp</h1>
-            <p className="text-xs text-gray-500 dark:text-gray-400">
-              v1.0 — Windows, audio-only, local-first
-            </p>
-          </div>
+          <span className="font-display text-[15px] font-semibold leading-none tracking-tight text-fg">
+            Meeting
+            <span className="text-muted transition-colors group-hover:text-fg">
+              Record
+            </span>
+          </span>
+          <span className="eyebrow">Local-first recorder</span>
         </button>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-5">
           <TrayIcon />
           <TrayMenu />
         </div>

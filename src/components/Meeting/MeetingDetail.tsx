@@ -92,17 +92,16 @@ export function MeetingDetail() {
     transcription.status?.stage === "diarizing";
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-4xl flex-col gap-4 p-6">
+    <div className="mx-auto flex h-full w-full max-w-3xl flex-col gap-5 px-8 pt-6 pb-2">
       <div className="flex items-start justify-between gap-3">
-        <div>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="-ml-2 mb-1"
+        <div className="min-w-0">
+          <button
+            type="button"
             onClick={() => navigate(VIEWS.Meetings)}
+            className="eyebrow -ml-0.5 mb-3 inline-flex text-faint transition-colors hover:text-fg"
           >
             ← History
-          </Button>
+          </button>
           {titleEditing ? (
             <input
               autoFocus
@@ -114,28 +113,32 @@ export function MeetingDetail() {
                 if (e.key === "Enter") void saveTitle();
                 if (e.key === "Escape") setTitleEditing(false);
               }}
-              className="w-full rounded-md border border-gray-300 bg-white px-2 py-1 text-xl font-semibold text-gray-900 focus:border-blue-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+              className="w-full border-b border-line-strong bg-transparent pb-1 font-display text-2xl font-medium tracking-tight text-fg focus:outline-none"
             />
           ) : (
             <h1
               onClick={beginEditTitle}
               title="點擊以重新命名"
-              className="cursor-text text-xl font-semibold text-gray-900 hover:opacity-80 dark:text-gray-100"
+              className="group cursor-text font-display text-2xl font-medium tracking-tight text-fg"
             >
               {meetingTitle(meeting.title, meeting.start_time)}
-              <span className="ml-2 align-middle text-xs font-normal text-gray-400">
+              <span className="ml-2 align-middle text-sm font-normal text-faint opacity-0 transition-opacity group-hover:opacity-100">
                 ✎
               </span>
             </h1>
           )}
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            {formatDateTime(meeting.start_time)} ·{" "}
+          <p className="num mt-2 flex items-center gap-2 text-[11px] text-muted">
+            {formatDateTime(meeting.start_time)}
+            <span className="text-faint">/</span>
             {formatDuration(meeting.duration_seconds)}
-            {meeting.meeting_type &&
-              ` · ${MEETING_TYPE_LABELS[meeting.meeting_type]}`}
+            {meeting.meeting_type && (
+              <span className="eyebrow text-faint">
+                {MEETING_TYPE_LABELS[meeting.meeting_type]}
+              </span>
+            )}
           </p>
         </div>
-        <Button variant="secondary" onClick={() => setExporting(true)}>
+        <Button variant="secondary" size="sm" onClick={() => setExporting(true)}>
           Export
         </Button>
       </div>
@@ -143,24 +146,27 @@ export function MeetingDetail() {
       <MeetingPlayer media={media} />
 
       {stillTranscribing && (
-        <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
-          Transcribing…{" "}
-          {transcription.status
-            ? `${Math.round(transcription.status.progress * 100)}%`
-            : ""}
+        <div className="flex items-center gap-2.5 border border-line bg-surface px-4 py-2.5 text-sm text-fg">
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-fg" />
+          <span className="eyebrow">Transcribing</span>
+          {transcription.status && (
+            <span className="num ml-auto text-[13px] text-muted">
+              {Math.round(transcription.status.progress * 100)}%
+            </span>
+          )}
         </div>
       )}
 
       {transcription.status?.stage === "error" && (
         <div
-          className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-300"
+          className="border border-line-strong bg-surface px-4 py-2.5 text-sm text-fg"
           role="alert"
         >
           轉錄失敗:{transcription.status.message ?? "未知錯誤"}
         </div>
       )}
 
-      <div className="flex gap-1 border-b border-gray-200 dark:border-gray-800">
+      <div className="flex gap-6 border-b border-line">
         <TabButton active={tab === "summary"} onClick={() => setTab("summary")}>
           Summary
         </TabButton>
@@ -487,10 +493,10 @@ function TabButton({
     <button
       type="button"
       onClick={onClick}
-      className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
+      className={`eyebrow -mb-px border-b-2 py-3 transition-colors ${
         active
-          ? "border-blue-600 text-blue-600 dark:text-blue-400"
-          : "border-transparent text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
+          ? "border-fg text-fg"
+          : "border-transparent text-faint hover:text-fg"
       }`}
     >
       {children}

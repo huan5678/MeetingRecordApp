@@ -2,8 +2,38 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Monochrome design tokens. Pure black/white system — no hue. Values flip on
+ * the `.dark` class (toggled by `applyTheme`, which resolves "system" from the
+ * OS preference), so the whole UI tracks light/dark automatically.
+ */
 :root {
   color-scheme: light dark;
+
+  --bg: #ffffff;
+  --surface: #f6f6f6;
+  --fg: #0a0a0a;
+  --muted: #585858; /* AA secondary text (~7:1) */
+  --faint: #767676; /* AA tertiary text (~4.5:1) */
+  --line: #e6e6e6;
+  --line-strong: #c4c4c4;
+
+  --font-sans: Inter, system-ui, "Helvetica Neue", Arial, "PingFang TC",
+    "Microsoft JhengHei", sans-serif;
+  --font-display: "Helvetica Neue", Inter, system-ui, "PingFang TC",
+    "Microsoft JhengHei", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas,
+    monospace;
+}
+
+.dark {
+  --bg: #0a0a0a;
+  --surface: #161616;
+  --fg: #f4f4f4;
+  --muted: #a6a6a6; /* AA secondary text */
+  --faint: #8a8a8a; /* AA tertiary text */
+  --line: #242424;
+  --line-strong: #3a3a3a;
 }
 
 html,
@@ -14,9 +44,50 @@ body,
 
 body {
   margin: 0;
-  font-family:
-    Inter, system-ui, Avenir, "Helvetica Neue", Arial, "PingFang TC",
-    "Microsoft JhengHei", sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: var(--fg);
+  color: var(--bg);
+}
+
+/* One disciplined focus treatment everywhere: a sharp inverted ring. */
+:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: 2px;
+}
+
+@layer components {
+  /* Uppercase, wide-tracked micro-label used for eyebrows, meta + status. */
+  .eyebrow {
+    font-family: var(--font-display);
+    font-size: 11px;
+    line-height: 1;
+    font-weight: 500;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  /* Tabular monospace for timecodes, durations and counts. */
+  .num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
 }

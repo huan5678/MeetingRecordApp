@@ -1,11 +1,11 @@
 /**
  * Transcript — viewer/editor for transcript segments (PRD §3.3 #16, #17).
- * Shows per-segment timestamp, speaker label (from diarization), and text.
- * Clicking a segment's text enables inline editing; saving pushes via
- * `api.updateSegment`. Speakers get a stable colour for quick scanning.
+ * Hairline-ruled rows with a monospace timecode, an uppercase speaker label
+ * (from diarization), and the text. Clicking a segment's text enables inline
+ * editing; saving pushes via `api.updateSegment`.
  */
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { api } from "@/lib/tauri";
 import { formatTimestamp } from "@/lib/format";
 import type { TranscriptSegment } from "@/lib/types";
@@ -16,50 +16,15 @@ export interface TranscriptProps {
   readOnly?: boolean;
 }
 
-const SPEAKER_COLORS = [
-  "text-blue-600 dark:text-blue-400",
-  "text-emerald-600 dark:text-emerald-400",
-  "text-purple-600 dark:text-purple-400",
-  "text-orange-600 dark:text-orange-400",
-  "text-pink-600 dark:text-pink-400",
-];
-
-/** Deterministic colour per distinct speaker label. */
-function useSpeakerColors(segments: TranscriptSegment[]): Map<string, string> {
-  return useMemo(() => {
-    const map = new Map<string, string>();
-    let i = 0;
-    for (const s of segments) {
-      const sp = s.speaker ?? "";
-      if (sp && !map.has(sp)) {
-        map.set(sp, SPEAKER_COLORS[i % SPEAKER_COLORS.length]);
-        i += 1;
-      }
-    }
-    return map;
-  }, [segments]);
-}
-
 export function Transcript({ segments, readOnly = false }: TranscriptProps) {
-  const colors = useSpeakerColors(segments);
-
   if (segments.length === 0) {
-    return (
-      <p className="text-sm text-gray-500 dark:text-gray-400">
-        Transcript not available yet.
-      </p>
-    );
+    return <p className="text-sm text-muted">Transcript not available yet.</p>;
   }
 
   return (
-    <ol className="flex flex-col gap-3">
+    <ol>
       {segments.map((seg) => (
-        <SegmentRow
-          key={seg.id}
-          segment={seg}
-          color={seg.speaker ? colors.get(seg.speaker) : undefined}
-          readOnly={readOnly}
-        />
+        <SegmentRow key={seg.id} segment={seg} readOnly={readOnly} />
       ))}
     </ol>
   );
@@ -67,11 +32,9 @@ export function Transcript({ segments, readOnly = false }: TranscriptProps) {
 
 function SegmentRow({
   segment,
-  color,
   readOnly,
 }: {
   segment: TranscriptSegment;
-  color?: string;
   readOnly: boolean;
 }) {
   const [editing, setEditing] = useState(false);
@@ -85,13 +48,13 @@ function SegmentRow({
   };
 
   return (
-    <li className="grid grid-cols-[auto_1fr] gap-3">
-      <span className="pt-0.5 font-mono text-xs tabular-nums text-gray-400 dark:text-gray-500">
+    <li className="grid grid-cols-[3.25rem_1fr] gap-4 border-t border-line py-3 first:border-t-0">
+      <span className="num pt-1 text-[11px] text-faint">
         {formatTimestamp(segment.start_time_ms)}
       </span>
       <div>
         {segment.speaker && (
-          <span className={`mr-2 text-xs font-semibold ${color ?? ""}`}>
+          <span className="eyebrow mr-2 align-baseline text-fg">
             {segment.speaker}
           </span>
         )}
@@ -108,13 +71,13 @@ function SegmentRow({
                 setEditing(false);
               }
             }}
-            className="mt-1 w-full resize-y rounded border border-blue-400 bg-white p-2 text-sm text-gray-900 focus:outline-none dark:bg-gray-800 dark:text-gray-100"
+            className="mt-1 w-full resize-y border border-line-strong bg-bg p-2 text-sm text-fg focus:outline-none"
             rows={2}
           />
         ) : (
           <span
-            className={`text-sm text-gray-800 dark:text-gray-200 ${
-              readOnly ? "" : "cursor-text hover:bg-yellow-50 dark:hover:bg-gray-800"
+            className={`text-sm leading-relaxed text-fg ${
+              readOnly ? "" : "cursor-text hover:bg-surface"
             }`}
             onClick={() => !readOnly && setEditing(true)}
           >

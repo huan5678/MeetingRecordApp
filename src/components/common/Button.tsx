@@ -13,26 +13,24 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   size?: Size;
 }
 
+// Monochrome system. Focus uses the global `:focus-visible` outline (globals.css)
+// so buttons don't suppress it.
 const BASE =
-  "inline-flex items-center justify-center gap-2 rounded-md font-medium " +
-  "transition-colors focus:outline-none focus-visible:ring-2 " +
-  "focus-visible:ring-blue-500 focus-visible:ring-offset-2 " +
-  "dark:focus-visible:ring-offset-gray-950 disabled:cursor-not-allowed " +
-  "disabled:opacity-50";
+  "inline-flex items-center justify-center gap-2 font-medium transition-colors " +
+  "disabled:cursor-not-allowed disabled:opacity-40";
 
 const VARIANTS: Record<Variant, string> = {
-  primary:
-    "bg-blue-600 text-white hover:bg-blue-700 active:bg-blue-800",
-  secondary:
-    "border border-gray-300 bg-white text-gray-900 hover:bg-gray-50 " +
-    "dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700",
-  ghost:
-    "text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800",
-  danger: "bg-recording text-white hover:bg-red-600 active:bg-red-700",
+  // Inverted ink/paper — the loud, primary action.
+  primary: "bg-fg text-bg hover:opacity-90 active:opacity-80",
+  // Hairline outline — the quiet, secondary action.
+  secondary: "border border-line-strong text-fg hover:bg-surface",
+  ghost: "text-muted hover:bg-surface hover:text-fg",
+  // No red in a monochrome system; destructive shares the inverted treatment.
+  danger: "bg-fg text-bg hover:opacity-90 active:opacity-80",
 };
 
 const SIZES: Record<Size, string> = {
-  sm: "h-8 px-3 text-sm",
+  sm: "h-8 px-3 text-[13px]",
   md: "h-10 px-4 text-sm",
   lg: "h-12 px-6 text-base",
 };
