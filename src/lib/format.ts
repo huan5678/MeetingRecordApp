@@ -43,10 +43,30 @@ export function formatBytes(bytes: number | null | undefined): string {
   return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
+/** A meeting's display name: its title, or its start time when unnamed. */
+export function meetingTitle(
+  title: string | null | undefined,
+  startTime: string,
+): string {
+  const t = title?.trim();
+  return t ? t : formatDateTime(startTime);
+}
+
+/**
+ * Parse a backend timestamp into a Date. The Rust side stores UTC wall-clock
+ * with NO zone marker (e.g. "2026-06-23 09:48:18"); `new Date()` would read that
+ * as *local* time and be off by the user's offset. So when the string carries
+ * no zone (trailing `Z` or `±HH:MM`), treat it as UTC.
+ */
+function parseBackendDate(iso: string): Date {
+  const hasZone = /(Z|[+-]\d{2}:?\d{2})$/.test(iso);
+  return new Date(hasZone ? iso : `${iso.replace(" ", "T")}Z`);
+}
+
 /** ISO timestamp -> locale date+time, gracefully degrading on bad input. */
 export function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return "—";
-  const d = new Date(iso);
+  const d = parseBackendDate(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleString(undefined, {
     year: "numeric",

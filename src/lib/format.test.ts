@@ -69,4 +69,10 @@ describe("formatDateTime", () => {
     expect(out).not.toBe("—");
     expect(out.length).toBeGreaterThan(0);
   });
+  it("treats a zone-less backend timestamp as UTC (same instant as the Z form)", () => {
+    // The Rust side stores "YYYY-MM-DD HH:MM:SS" in UTC, no zone marker.
+    expect(formatDateTime("2026-06-18 14:00:00")).toBe(
+      formatDateTime("2026-06-18T14:00:00Z"),
+    );
+  });
 });
