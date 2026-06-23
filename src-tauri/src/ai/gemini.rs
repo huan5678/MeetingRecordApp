@@ -15,8 +15,8 @@ use crate::models::AiProviderKind;
 
 const API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 
-/// Default model: the fast, low-cost Flash tier.
-pub const DEFAULT_MODEL: &str = "gemini-1.5-flash";
+/// Default model: the current fast, low-cost Flash tier.
+pub const DEFAULT_MODEL: &str = "gemini-3.5-flash";
 
 /// Conservative context budget for chunking (Flash/Pro support large windows;
 /// stay well under to leave room for the reply).
@@ -210,8 +210,8 @@ impl AiProvider for GeminiProvider {
     fn models(&self) -> Vec<String> {
         vec![
             "gemini-3.5-flash".to_string(),
-            "gemini-1.5-flash".to_string(),
-            "gemini-1.5-pro".to_string(),
+            "gemini-2.5-flash".to_string(),
+            "gemini-3.1-flash-lite".to_string(),
         ]
     }
 

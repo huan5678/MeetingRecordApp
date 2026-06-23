@@ -104,7 +104,7 @@ export const PROVIDER_META: Record<AiProvider, ProviderMeta> = {
     id: "gemini",
     label: "Gemini",
     cloud: true,
-    models: ["gemini-1.5-pro", "gemini-1.5-flash"],
+    models: ["gemini-3.5-flash", "gemini-2.5-flash", "gemini-3.1-flash-lite"],
   },
 };
 
