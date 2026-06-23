@@ -26,6 +26,10 @@ const UPLOAD_URL: &str = "https://generativelanguage.googleapis.com/upload/v1bet
 /// Default multimodal model (audio-capable, fast tier).
 pub const DEFAULT_MODEL: &str = "gemini-3.5-flash";
 
+/// Max output tokens for the Flash tier (gemini-3.5-flash et al.). We request
+/// the model maximum so long transcripts have the most room before truncating.
+const MAX_OUTPUT_TOKENS: u32 = 65_536;
+
 /// What one Gemini audio call yields: transcript rows + an auto-summary.
 pub struct GeminiAudioResult {
     pub segments: Vec<TranscriptSegment>,
@@ -70,6 +74,13 @@ pub async fn transcribe_and_summarize(
         }],
         generation_config: GGenConfig {
             response_mime_type: "application/json",
+            // Push the output ceiling to the model max (65,536 for 3.5-flash);
+            // long transcripts truncate otherwise.
+            max_output_tokens: MAX_OUTPUT_TOKENS,
+            // Transcription needs no reasoning, and on a *thinking* model the
+            // thinking tokens count against the output budget — disabling it
+            // frees the whole budget for the transcript/summary JSON.
+            thinking_config: ThinkingConfig { thinking_budget: 0 },
         },
     };
 
@@ -92,11 +103,14 @@ pub async fn transcribe_and_summarize(
     let parsed: GenerateContentResponse =
         resp.json().await.map_err(|e| AiError::Parse(e.to_string()))?;
     let tokens = parsed.usage_metadata.and_then(|u| u.total_token_count);
-    let text = parsed
+    let candidate = parsed
         .candidates
         .into_iter()
         .next()
-        .and_then(|c| c.content)
+        .ok_or_else(|| AiError::Parse("no candidates in Gemini response".into()))?;
+    let finish_reason = candidate.finish_reason.clone();
+    let text = candidate
+        .content
         .map(|c| {
             c.parts
                 .into_iter()
@@ -104,9 +118,9 @@ pub async fn transcribe_and_summarize(
                 .collect::<Vec<_>>()
                 .join("")
         })
-        .ok_or_else(|| AiError::Parse("no candidates in Gemini response".into()))?;
+        .ok_or_else(|| AiError::Parse("no content in Gemini response".into()))?;
 
-    parse_audio_response(&text, meeting_id, created_at, model, tokens)
+    parse_audio_response(&text, meeting_id, created_at, model, tokens, finish_reason.as_deref())
 }
 
 /// Resumable Files-API upload (no multipart/base64 needed): start → upload bytes
@@ -192,21 +206,28 @@ async fn upload_audio(
 }
 
 /// Parse Gemini's JSON answer into transcript rows + a summary draft. Pure +
-/// unit-tested (no network).
+/// unit-tested (no network). Tolerant of truncation: if the response was cut off
+/// (output-token ceiling, `finishReason == "MAX_TOKENS"`), salvage the segments
+/// that did parse rather than failing outright.
 fn parse_audio_response(
     text: &str,
     meeting_id: &str,
     created_at: &str,
     model: &str,
     tokens_used: Option<i64>,
+    finish_reason: Option<&str>,
 ) -> Result<GeminiAudioResult> {
     let trimmed = text.trim().trim_start_matches("```json").trim_matches('`').trim();
-    let raw: AudioJson = serde_json::from_str(trimmed).map_err(|e| {
-        AiError::Parse(format!(
-            "Gemini audio JSON parse: {e} (got: {})",
-            trimmed.chars().take(200).collect::<String>()
-        ))
-    })?;
+    let raw: AudioJson = match serde_json::from_str(trimmed) {
+        Ok(r) => r,
+        Err(e) => salvage_truncated(trimmed).ok_or_else(|| {
+            AiError::Parse(format!(
+                "Gemini audio JSON parse: {e} (finishReason: {}; got: {})",
+                finish_reason.unwrap_or("?"),
+                trimmed.chars().take(200).collect::<String>()
+            ))
+        })?,
+    };
 
     let language = raw.language.clone();
     let segments = raw
@@ -241,6 +262,98 @@ fn parse_audio_response(
         summary,
         language,
     })
+}
+
+/// Best-effort recovery from a truncated Gemini JSON (output hit the token
+/// ceiling). Returns the segments that fully parsed plus a placeholder summary
+/// telling the user to regenerate it. `None` if nothing usable was recovered.
+fn salvage_truncated(text: &str) -> Option<AudioJson> {
+    let segments = salvage_segments(text);
+    if segments.is_empty() {
+        return None;
+    }
+    Some(AudioJson {
+        language: extract_language(text),
+        segments,
+        summary: SummaryJson {
+            content: "⚠️ 此會議較長,Gemini 單次輸出達上限被截斷,逐字稿可能不完整,且未能自動產生摘要。請按上方「Regenerate」用現有逐字稿重新產生摘要,或改用較短/分段的音檔。".to_string(),
+            action_items: Vec::new(),
+            key_decisions: Vec::new(),
+        },
+    })
+}
+
+/// Pull `"language": "..."` out of a (possibly truncated) JSON, best effort.
+fn extract_language(text: &str) -> Option<String> {
+    const KEY: &str = "\"language\"";
+    let after_key = &text[text.find(KEY)? + KEY.len()..];
+    let after_open = &after_key[after_key.find('"')? + 1..];
+    Some(after_open[..after_open.find('"')?].to_string())
+}
+
+/// Extract the complete `{...}` objects from the `"segments"` array, stopping at
+/// the first incomplete one. Tracks string/escape state so braces inside the
+/// transcript text don't confuse the matcher.
+fn salvage_segments(text: &str) -> Vec<SegJson> {
+    let bytes = text.as_bytes();
+    let n = bytes.len();
+    let Some(seg_kw) = text.find("\"segments\"") else {
+        return Vec::new();
+    };
+    let Some(rel) = text[seg_kw..].find('[') else {
+        return Vec::new();
+    };
+    let mut i = seg_kw + rel + 1;
+    let mut out = Vec::new();
+    loop {
+        while i < n && (bytes[i].is_ascii_whitespace() || bytes[i] == b',') {
+            i += 1;
+        }
+        if i >= n || bytes[i] != b'{' {
+            break; // end of array, or truncated before the next object
+        }
+        let start = i;
+        let mut depth = 0i32;
+        let mut in_str = false;
+        let mut esc = false;
+        let mut end = None;
+        let mut k = i;
+        while k < n {
+            let c = bytes[k];
+            if in_str {
+                match c {
+                    _ if esc => esc = false,
+                    b'\\' => esc = true,
+                    b'"' => in_str = false,
+                    _ => {}
+                }
+            } else {
+                match c {
+                    b'"' => in_str = true,
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = Some(k);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            k += 1;
+        }
+        match end {
+            Some(e) => {
+                if let Ok(seg) = serde_json::from_str::<SegJson>(&text[start..=e]) {
+                    out.push(seg);
+                }
+                i = e + 1;
+            }
+            None => break, // incomplete trailing object → stop
+        }
+    }
+    out
 }
 
 /// Map a file extension to the audio MIME type Gemini understands. Covers the
@@ -322,6 +435,16 @@ struct GFileData {
 struct GGenConfig {
     #[serde(rename = "responseMimeType")]
     response_mime_type: &'static str,
+    #[serde(rename = "maxOutputTokens")]
+    max_output_tokens: u32,
+    #[serde(rename = "thinkingConfig")]
+    thinking_config: ThinkingConfig,
+}
+
+#[derive(Serialize)]
+struct ThinkingConfig {
+    #[serde(rename = "thinkingBudget")]
+    thinking_budget: u32,
 }
 
 #[derive(Deserialize)]
@@ -336,6 +459,9 @@ struct GenerateContentResponse {
 struct Candidate {
     #[serde(default)]
     content: Option<ResponseContent>,
+    /// "STOP" on success; "MAX_TOKENS" when the output was truncated, etc.
+    #[serde(rename = "finishReason", default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -420,8 +546,15 @@ mod tests {
             "key_decisions": [{"decision": "採用 Tauri", "context": null}]
           }
         }"##;
-        let r = parse_audio_response(json, "m1", "2026-06-23T00:00:00Z", "gemini-3.5-flash", Some(42))
-            .unwrap();
+        let r = parse_audio_response(
+            json,
+            "m1",
+            "2026-06-23T00:00:00Z",
+            "gemini-3.5-flash",
+            Some(42),
+            Some("STOP"),
+        )
+        .unwrap();
         assert_eq!(r.language.as_deref(), Some("zh-TW"));
         assert_eq!(r.segments.len(), 2);
         assert_eq!(r.segments[0].meeting_id, "m1");
@@ -447,8 +580,31 @@ mod tests {
     #[test]
     fn tolerates_code_fence() {
         let json = "```json\n{\"language\":\"zh-TW\",\"segments\":[],\"summary\":{\"content\":\"x\"}}\n```";
-        let r = parse_audio_response(json, "m", "now", "gemini-3.5-flash", None).unwrap();
+        let r = parse_audio_response(json, "m", "now", "gemini-3.5-flash", None, Some("STOP")).unwrap();
         assert!(r.segments.is_empty());
         assert_eq!(r.summary.content, "x");
+    }
+
+    #[test]
+    fn salvages_truncated_response() {
+        // A valid prefix cut off mid-second-object (mirrors the real MAX_TOKENS
+        // failure: "...\"start_ms\": 18000, \"end_ms").
+        let json = "{\"language\":\"zh-TW\",\"segments\":[\
+            {\"start_ms\":0,\"end_ms\":8200,\"speaker\":\"講者 1\",\"text\":\"四環這禮拜有沒有新的進度要展示的？\"},\
+            {\"start_ms\":18000,\"end_ms";
+        let r = parse_audio_response(json, "m1", "now", "gemini-3.5-flash", Some(10), Some("MAX_TOKENS"))
+            .unwrap();
+        assert_eq!(r.segments.len(), 1, "keeps the one complete segment");
+        assert_eq!(r.segments[0].text, "四環這禮拜有沒有新的進度要展示的？");
+        assert_eq!(r.language.as_deref(), Some("zh-TW"));
+        assert!(r.summary.content.contains("截斷"), "summary notes the truncation");
+    }
+
+    #[test]
+    fn unrecoverable_truncation_still_errors() {
+        // Cut before any complete segment → nothing to salvage.
+        let json = "{\"language\":\"zh-TW\",\"segments\":[{\"start_ms\":0,\"end_ms";
+        let err = parse_audio_response(json, "m", "now", "gemini-3.5-flash", None, Some("MAX_TOKENS"));
+        assert!(err.is_err());
     }
 }
