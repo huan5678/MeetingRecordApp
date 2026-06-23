@@ -45,6 +45,7 @@ export const COMMANDS = {
   listTranscriptRuns: "list_transcript_runs",
   getRunSegments: "get_run_segments",
   deleteTranscriptRun: "delete_transcript_run",
+  clearTranscripts: "clear_transcripts",
   deleteSummary: "delete_summary",
   updateSegment: "update_segment",
   // summary
@@ -186,6 +187,9 @@ export const api = {
     call<TranscriptSegment[]>(COMMANDS.getRunSegments, { runId }),
   deleteTranscriptRun: (runId: string) =>
     call<void>(COMMANDS.deleteTranscriptRun, { runId }),
+  /** Clear every transcript run for a meeting at once. */
+  clearTranscripts: (meetingId: string) =>
+    call<void>(COMMANDS.clearTranscripts, { meetingId }),
   deleteSummary: (summaryId: string) =>
     call<void>(COMMANDS.deleteSummary, { summaryId }),
 
@@ -281,6 +285,7 @@ async function mockInvoke<T>(
     case COMMANDS.deleteMeeting:
     case COMMANDS.retranscribeMeeting:
     case COMMANDS.deleteTranscriptRun:
+    case COMMANDS.clearTranscripts:
     case COMMANDS.deleteSummary:
     case COMMANDS.updateSegment:
     case COMMANDS.setSetting:

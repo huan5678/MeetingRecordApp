@@ -414,6 +414,17 @@ impl Database {
         Ok(())
     }
 
+    /// Clear ALL transcript runs + segments for a meeting in one go (the
+    /// "one-click clear" action). Segment deletes fire the FTS `AFTER DELETE`
+    /// trigger. Summaries are left untouched.
+    pub fn clear_transcripts(&self, meeting_id: &str) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM transcript_segments WHERE meeting_id = ?1", [meeting_id])?;
+        tx.execute("DELETE FROM transcript_runs WHERE meeting_id = ?1", [meeting_id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Delete a single summary (the user can prune old regenerations).
     pub fn delete_summary(&self, summary_id: &str) -> Result<()> {
         self.conn

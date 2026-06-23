@@ -493,6 +493,12 @@ pub fn delete_transcript_run(
     lock_db(&state)?.delete_transcript_run(&run_id).map_err(err)
 }
 
+/// Clear every transcript run (and its segments) for a meeting at once.
+#[tauri::command]
+pub fn clear_transcripts(state: State<'_, AppState>, meeting_id: String) -> Result<(), String> {
+    lock_db(&state)?.clear_transcripts(&meeting_id).map_err(err)
+}
+
 /// Delete one summary.
 #[tauri::command]
 pub fn delete_summary(state: State<'_, AppState>, summary_id: String) -> Result<(), String> {

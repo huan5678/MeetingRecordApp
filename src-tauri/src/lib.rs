@@ -88,6 +88,7 @@ pub fn run() {
             commands::list_transcript_runs,
             commands::get_run_segments,
             commands::delete_transcript_run,
+            commands::clear_transcripts,
             commands::delete_summary,
             commands::update_segment,
             // summary

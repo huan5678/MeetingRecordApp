@@ -245,33 +245,60 @@ function TranscriptTab({
     onChanged();
   };
 
+  const clearAll = async () => {
+    if (
+      !window.confirm(
+        "清除這場會議的所有逐字稿版本?此動作無法復原(摘要會保留)。",
+      )
+    ) {
+      return;
+    }
+    await api.clearTranscripts(meetingId).catch(() => {});
+    setSelectedRunId(null);
+    setRunSegments(null);
+    onChanged();
+  };
+
+  const hasTranscript = runs.length > 0 || latestSegments.length > 0;
+
   return (
     <div className="space-y-3">
-      {runs.length > 1 && (
-        <div className="flex items-center gap-2">
-          <label className="text-xs text-gray-500 dark:text-gray-400">版本</label>
-          <select
-            value={selectedRunId ?? latestRunId ?? ""}
-            onChange={(e) => void selectRun(e.target.value)}
-            className="rounded-md border border-gray-300 bg-white p-1.5 text-sm dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
-          >
-            {runs.map((r) => (
-              <option key={r.id} value={r.id}>
-                {runLabel(r)}
-              </option>
-            ))}
-          </select>
-          {!isLatest && selectedRunId && (
-            <button
-              type="button"
-              onClick={() => void deleteRun(selectedRunId)}
-              className="text-xs text-red-600 hover:underline dark:text-red-400"
+      <div className="flex items-center gap-2">
+        {runs.length > 1 && (
+          <>
+            <label className="text-xs text-gray-500 dark:text-gray-400">版本</label>
+            <select
+              value={selectedRunId ?? latestRunId ?? ""}
+              onChange={(e) => void selectRun(e.target.value)}
+              className="rounded-md border border-gray-300 bg-white p-1.5 text-sm dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
             >
-              刪除此版本
-            </button>
-          )}
-        </div>
-      )}
+              {runs.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {runLabel(r)}
+                </option>
+              ))}
+            </select>
+            {!isLatest && selectedRunId && (
+              <button
+                type="button"
+                onClick={() => void deleteRun(selectedRunId)}
+                className="text-xs text-red-600 hover:underline dark:text-red-400"
+              >
+                刪除此版本
+              </button>
+            )}
+          </>
+        )}
+        {hasTranscript && (
+          <button
+            type="button"
+            onClick={() => void clearAll()}
+            className="ml-auto text-xs text-red-600 hover:underline dark:text-red-400"
+          >
+            🗑 清除全部逐字稿
+          </button>
+        )}
+      </div>
 
       <RetranscribePanel meetingId={meetingId} onStarted={onTranscribeStarted} />
 
