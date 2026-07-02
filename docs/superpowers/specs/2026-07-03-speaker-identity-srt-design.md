@@ -158,3 +158,24 @@ Bob Wang
 2. **Phase 1** — U2 + U4 純函式 + 測試(不碰平台,Mac 上可全綠)。
 3. **Phase 2** — U1 poller + U3 sidecar + U5 接線,Windows 手測。
 4. **Phase 3**(選配)— roster 前置 prompt 補洞。
+
+## 實作狀態(2026-07-03)
+
+TDD 完成、`cargo test` 全綠(251 lib + 1 E2E),`src-tauri/src/detection/speaker.rs`:
+
+- ✅ **U2 `build_spans`** — 純 debounce,2 測試(merge/flicker/None-close、gap-split)。
+- ✅ **U3 `to_speaker_srt` / `parse_speaker_srt`** — 重用 `export::fmt_timestamp`,round-trip + 容錯測試。
+- ✅ **U4 `assign_speakers`** — overlap-join,涵蓋乾淨對應/跨邊界多數決/平手/低於門檻保留既有。
+- ✅ **U1 `SpeakerMonitor` / `SpeakerCapture`** — 鏡射 `detection/monitor.rs`,單調時鐘 + stop flag,lifecycle 測試(非 Windows path)。**`read_active_speaker()` 目前回 `None`(Phase 0 gate)** — UIA 讀取待 spike 驗證後補上,是唯一未完成的一函式。
+- ✅ **U5 接線** — `commands.rs` 錄音起 spawn poller / 停止 join+寫 `speakers.srt`(spans 非空才寫);`transcription/worker.rs` 兩條路徑(Gemini + whisper)在寫 DB 前 `apply_speaker_identity` 做 overlap-join。全程優雅降級,零回歸。
+- ✅ **E2E(Mac-runnable)** — `src-tauri/tests/speaker_pipeline_e2e.rs`:samples → build_spans → speakers.srt 文字 → parse → overlap-join → 具名逐字稿,確定性斷言。
+
+### 尚待(需 Windows / 需真人會議,本機無法跑)
+
+- **Phase 0 UIA spike**(見上方清單)→ 填 `read_active_speaker()`。
+- **裝置級 E2E(Windows 手測)**:
+  1. Windows 上 `git fetch origin; git reset --hard origin/main`,`npm run tauri build`。
+  2. 開 Teams 通話,本 app 開始錄音 → 說話切換數位發話人。
+  3. 停止錄音 → 檢查 meeting 目錄下有 `speakers.srt` 且名字/時間段合理。
+  4. 轉錄完成 → 逐字稿 `speaker` 欄位為真名(非 `Speaker N`),摘要人名正確。
+- **Phase 3**(選配)roster 前置 prompt。

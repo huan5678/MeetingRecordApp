@@ -107,6 +107,10 @@ pub struct AppState {
     /// only `Send + Sync` control handles (the `!Send` audio streams live on the
     /// capture thread — see [`crate::audio::live`]).
     pub session: Mutex<Option<LiveHandle>>,
+    /// The active speaker-identity poller (spec 2026-07-03), present only while
+    /// recording. On stop its debounced spans are written to `speakers.srt` so
+    /// the transcription worker can overlap-join real speaker names.
+    pub speaker_session: Mutex<Option<crate::detection::speaker::SpeakerCapture>>,
     /// Latest transcription progress per meeting id.
     pub transcription: Mutex<std::collections::HashMap<String, TranscriptionProgressEntry>>,
 }
@@ -133,6 +137,7 @@ impl AppState {
             files,
             recording: Mutex::new(RecordingState::default()),
             session: Mutex::new(None),
+            speaker_session: Mutex::new(None),
             transcription: Mutex::new(std::collections::HashMap::new()),
         })
     }
@@ -295,6 +300,9 @@ pub fn start_recording(
         },
         wav_path,
     };
+    // Clock the speaker-identity poller from the same instant we start capture so
+    // its timestamps share the recording clock (spec 2026-07-03).
+    let capture_start = std::time::Instant::now();
     let handle = match live::start_session(live_cfg) {
         Ok(h) => h,
         Err(e) => {
@@ -307,6 +315,14 @@ pub fn start_recording(
         }
     };
     *state.session.lock().map_err(|_| "session lock poisoned")? = Some(handle);
+    // Start capturing who-is-speaking alongside the audio. Best-effort: off
+    // Teams / off Windows (or before the Phase 0 UIA read lands) it captures
+    // nothing and no sidecar is written on stop.
+    *state
+        .speaker_session
+        .lock()
+        .map_err(|_| "speaker session lock poisoned")? =
+        Some(crate::detection::speaker::SpeakerCapture::spawn(capture_start));
 
     let mut rec = state.recording.lock().map_err(|_| "recording lock poisoned")?;
     rec.phase = Some(RecordingPhase::Recording);
@@ -342,6 +358,17 @@ pub fn stop_recording(app: AppHandle, state: State<'_, AppState>) -> Result<Stri
         .map_err(|_| "session lock poisoned")?
         .take();
 
+    // Always stop + join the speaker poller so its thread never outlives the
+    // session; the debounced spans (empty unless the UIA read captured names)
+    // become the `speakers.srt` sidecar below.
+    let speaker_spans = state
+        .speaker_session
+        .lock()
+        .ok()
+        .and_then(|mut g| g.take())
+        .map(|cap| cap.finish())
+        .unwrap_or_default();
+
     let mut wav_for_transcription: Option<PathBuf> = None;
     let mut duration_seconds: i64 = 0;
 
@@ -364,6 +391,13 @@ pub fn stop_recording(app: AppHandle, state: State<'_, AppState>) -> Result<Stri
                 };
                 if let Ok(db) = state.db.lock() {
                     let _ = db.insert_media_file(&media);
+                }
+                // Persist the speaker-identity sidecar next to the WAV so the
+                // transcription worker overlap-joins real names. Empty capture
+                // → no file (zero change to today's behaviour).
+                if !speaker_spans.is_empty() {
+                    let srt = crate::detection::speaker::to_speaker_srt(&speaker_spans);
+                    let _ = std::fs::write(result.wav_path.with_file_name("speakers.srt"), srt);
                 }
                 wav_for_transcription = Some(result.wav_path);
             }

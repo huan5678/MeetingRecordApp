@@ -163,6 +163,27 @@ fn run(app: AppHandle, meeting_id: String, wav_path: PathBuf, req: Transcription
     run_whisper(app, meeting_id, wav_path, req.model_id, req.diarize, req.language);
 }
 
+/// Overlay real speaker names onto freshly transcribed segments using the
+/// recording's `speakers.srt` identity sidecar (spec 2026-07-03), by mechanical
+/// overlap-join. The sidecar sits next to the WAV; when it is absent (non-Teams,
+/// non-Windows, or the UIA capture read nothing) this is a silent no-op, so it is
+/// safe to call unconditionally on both the Gemini and whisper paths.
+fn apply_speaker_identity(wav_path: &PathBuf, segments: &mut [crate::models::TranscriptSegment]) {
+    let srt_path = wav_path.with_file_name("speakers.srt");
+    let Ok(text) = std::fs::read_to_string(&srt_path) else {
+        return;
+    };
+    let spans = crate::detection::speaker::parse_speaker_srt(&text);
+    if spans.is_empty() {
+        return;
+    }
+    crate::detection::speaker::assign_speakers(
+        segments,
+        &spans,
+        crate::detection::speaker::DEFAULT_MIN_OVERLAP_FRAC,
+    );
+}
+
 /// Gemini multimodal engine: upload the WAV, get transcript + summary in one
 /// call, persist both, mark the meeting Completed. Returns `Err(msg)` on any
 /// failure so the caller can fall back to whisper.
@@ -209,7 +230,7 @@ fn try_gemini(
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
-    let res = rt
+    let mut res = rt
         .block_on(crate::ai::gemini_audio::transcribe_and_summarize(
             wav_path,
             meeting_id,
@@ -223,6 +244,9 @@ fn try_gemini(
             },
         ))
         .map_err(|e| e.to_string())?;
+
+    // Overlay real speaker names from the recording's identity sidecar, if any.
+    apply_speaker_identity(wav_path, &mut res.segments);
 
     let n = res.segments.len();
     if let Ok(db) = state.db.lock() {
@@ -362,15 +386,16 @@ fn run_whisper(
 
     match result {
         Ok(segments) => {
-            // Simplified→Traditional (OpenCC s2twp) when transcribing Chinese.
-            // The `mut` rebind is feature-gated so the default build (which never
-            // mutates) has no unused-mut warning.
-            #[cfg(feature = "opencc")]
+            // `mut` is always used now: the identity overlay below takes
+            // `&mut segments` on every build, so no cfg gate is needed.
             let mut segments = segments;
+            // Simplified→Traditional (OpenCC s2twp) when transcribing Chinese.
             #[cfg(feature = "opencc")]
             if want_traditional {
                 super::zhconvert::segments_to_traditional(&mut segments);
             }
+            // Overlay real speaker names from the recording's identity sidecar.
+            apply_speaker_identity(&wav_path, &mut segments);
             if let Ok(db) = state.db.lock() {
                 let run = crate::models::TranscriptRun {
                     id: uuid::Uuid::new_v4().to_string(),

@@ -16,6 +16,8 @@
 
 pub mod monitor;
 
+pub mod speaker;
+
 pub use monitor::{ActiveWindow, WindowMonitor};
 
 use serde::{Deserialize, Serialize};
