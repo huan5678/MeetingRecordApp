@@ -144,9 +144,16 @@ impl Diarizer {
     pub fn diarize(&self, pcm_16k_mono: &[f32]) -> Result<Vec<SpeakerTurn>> {
         use sherpa_rs::diarize::{Diarize, DiarizeConfig as SherpaConfig};
 
+        // sherpa-rs 0.6.8 DiarizeConfig: `num_clusters` is Option<i32> (None =
+        // let the backend estimate the speaker count). Fields listed explicitly
+        // so we don't depend on a `Default` impl.
         let config = SherpaConfig {
-            num_clusters: self.config.num_speakers.map(|n| n as i32).unwrap_or(-1),
-            ..Default::default()
+            num_clusters: self.config.num_speakers.map(|n| n as i32),
+            threshold: None,
+            min_duration_on: None,
+            min_duration_off: None,
+            provider: None,
+            debug: false,
         };
         let mut engine = Diarize::new(
             self.config
@@ -158,8 +165,10 @@ impl Diarizer {
         )
         .map_err(|e| super::TranscriptionError::Engine(format!("sherpa init: {e}")))?;
 
+        // Second arg is an optional progress callback (Option<ProgressCallback>);
+        // we don't report per-chunk diarization progress.
         let segments = engine
-            .compute(pcm_16k_mono.to_vec(), |_processed, _total| {})
+            .compute(pcm_16k_mono.to_vec(), None)
             .map_err(|e| super::TranscriptionError::Engine(format!("sherpa compute: {e}")))?;
 
         Ok(segments
