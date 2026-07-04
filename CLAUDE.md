@@ -67,3 +67,17 @@ Code behind these is `#[cfg(feature = "…")]`; when a feature is off, the path 
 - **Deploy/test loop:** `origin` is a **bare repo on the user's Windows machine**; it builds by `git fetch origin; git reset --hard origin/main`. So commits go directly to **`main`** (do not branch for this repo) and are only testable once pushed.
 - **Timestamps:** the backend stores UTC wall-clock with no zone marker; the frontend (`formatDateTime`) treats zone-less strings as UTC and renders local time. Don't "fix" by parsing as local.
 - `index.html` must NOT contain a CSP `<meta>` tag — it overrides `tauri.conf.json` and breaks media playback / `connect-src`.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs live as markdown files under `.scratch/<feature-slug>/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Five canonical triage roles, default strings (needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
