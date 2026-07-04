@@ -1,0 +1,9 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "resources/models/sherpa-segmentation.onnx": "models/sherpa-segmentation.onnx",
+      "resources/models/sherpa-embedding.onnx": "models/sherpa-embedding.onnx"
+    }
+  }
+}

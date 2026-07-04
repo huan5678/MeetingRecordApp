@@ -9,6 +9,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "models:diarize": "node scripts/fetch-diarize-models.mjs",
+    "build:diarize": "npm run models:diarize && tauri build --features diarize,opencc --config src-tauri/tauri.diarize.conf.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"

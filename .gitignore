@@ -37,3 +37,6 @@ Thumbs.db
 *.log
 *.sqlite
 *.sqlite-*
+
+# Bundled ML models fetched at build time (npm run models:diarize) — not committed
+src-tauri/resources/models/
