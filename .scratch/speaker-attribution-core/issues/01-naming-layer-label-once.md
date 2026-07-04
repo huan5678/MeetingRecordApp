@@ -1,6 +1,6 @@
 # 01 — 命名層端到端(speaker_labels + 標一次)
 
-Status: ready-for-agent
+Status: done
 Type: AFK
 
 Spec: `docs/superpowers/specs/2026-07-04-speaker-attribution-core-design.md` §C3
@@ -15,14 +15,20 @@ Spec: `docs/superpowers/specs/2026-07-04-speaker-attribution-core-design.md` §C
 
 ## Acceptance criteria
 
-- [ ] migration 建 `speaker_labels(meeting_id, raw_label, display_name, source)`,PK `(meeting_id, raw_label)`;加法式、`IF NOT EXISTS`、冪等、無 version table(對齊既有 migration 慣例)
-- [ ] 後端指令 `set_speaker_label(meeting_id, raw_label, display_name)`:upsert 一列,`source='manual'`;註冊進 `generate_handler!`;`models.rs` ↔ `types.ts` 對齊(snake_case)
-- [ ] 讀取路徑(latest-run segments + meeting detail)有 label 時以 `display_name` 覆蓋 `speaker`,無 label 保留原值
-- [ ] `tauri.ts` COMMANDS + `mockInvoke` case;`mocks.ts` 提供帶 "Speaker 1/2" 的樣本段落
-- [ ] 前端:逐字稿 speaker chip 可點 → 輸入名字 → 同 meeting 該 `raw_label` 全段即時更新
-- [ ] 測試:resolve-at-read(有/無 label/覆蓋/多群)、`set_speaker_label` upsert 冪等、前端「標一次→全稿更新」(vitest)
-- [ ] `npm run build`(tsc + vite)與 `cargo test`(預設 features)全綠
+- [x] migration 建 `speaker_labels(meeting_id, raw_label, display_name, source)`,PK `(meeting_id, raw_label)`;加法式、`IF NOT EXISTS`、冪等、無 version table(`003_speaker_labels.sql`)
+- [x] 後端指令 `set_speaker_label(meeting_id, raw_label, display_name)`:upsert 一列,`source='manual'`;註冊進 `generate_handler!`
+- [x] 解析:segments 保留原始 `speaker`;新增 `get_speaker_labels` 指令,前端以 `labels[raw] ?? raw` 解析(改 spec C3 的 overlay-at-read → 前端解析,理由:二次改名正確性)
+- [x] `tauri.ts` COMMANDS + `mockInvoke`(有狀態 label store);`mocks.ts` 改為 "Speaker 1/2"
+- [x] 前端:`Transcript` speaker chip 可點 → 輸入名字 → `onRelabel` 重載 → 全段即時更新
+- [x] 測試:`set_speaker_label` roundtrip/upsert(Rust)、`Transcript` 解析 + rename(vitest)、migration 建表
+- [x] `npm run build` 與 `cargo test`(預設 features)全綠
 
 ## Blocked by
 
 None - can start immediately.
+
+## Comments
+
+**Done (2026-07-04).** TDD red-green throughout. backend `cargo test` 252 綠、frontend 43 綠、`npm run build` 綠。
+一處對 spec 的偏離:C3 原設計 overlay-at-read(後端覆寫 `speaker`),實作改為**前端解析 + 保留原始 label**,因為 overlay 會讓「改名後再改名」找不到原始 key。spec C3 已同步更新。
+export/summary 顯示真名未做(各自出口點解析,列後續)。

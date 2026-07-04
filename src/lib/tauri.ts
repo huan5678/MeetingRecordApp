@@ -48,6 +48,8 @@ export const COMMANDS = {
   clearTranscripts: "clear_transcripts",
   deleteSummary: "delete_summary",
   updateSegment: "update_segment",
+  setSpeakerLabel: "set_speaker_label",
+  getSpeakerLabels: "get_speaker_labels",
   // summary
   generateSummary: "generate_summary",
   estimateSummaryCost: "estimate_summary_cost",
@@ -199,6 +201,12 @@ export const api = {
     call<void>(COMMANDS.clearTranscripts, { meetingId }),
   deleteSummary: (summaryId: string) =>
     call<void>(COMMANDS.deleteSummary, { summaryId }),
+  /** Map a raw diarization label (e.g. "Speaker 1") to a real display name. */
+  setSpeakerLabel: (meetingId: string, rawLabel: string, displayName: string) =>
+    call<void>(COMMANDS.setSpeakerLabel, { meetingId, rawLabel, displayName }),
+  /** All speaker labels for a meeting, keyed by raw diarization label. */
+  getSpeakerLabels: (meetingId: string) =>
+    call<Record<string, string>>(COMMANDS.getSpeakerLabels, { meetingId }),
 
   // --- summary ---
   generateSummary: (opts: {
@@ -241,11 +249,23 @@ export const api = {
 // Mock backend — keeps the app runnable without Rust. Deterministic, no timers.
 // ---------------------------------------------------------------------------
 
+/** In-memory speaker-label store so label-once is demoable without the backend. */
+const mockSpeakerLabels = new Map<string, Record<string, string>>();
+
 async function mockInvoke<T>(
   command: string,
   args?: Record<string, unknown>,
 ): Promise<T> {
   switch (command) {
+    case COMMANDS.getSpeakerLabels:
+      return (mockSpeakerLabels.get(String(args?.meetingId ?? "")) ?? {}) as unknown as T;
+    case COMMANDS.setSpeakerLabel: {
+      const mid = String(args?.meetingId ?? "");
+      const raw = String(args?.rawLabel ?? "");
+      const name = String(args?.displayName ?? "");
+      mockSpeakerLabels.set(mid, { ...(mockSpeakerLabels.get(mid) ?? {}), [raw]: name });
+      return undefined as unknown as T;
+    }
     case COMMANDS.listMeetings:
       return MOCK_MEETINGS as unknown as T;
     case COMMANDS.searchTranscripts: {

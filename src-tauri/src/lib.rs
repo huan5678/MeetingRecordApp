@@ -90,6 +90,8 @@ pub fn run() {
             commands::delete_transcript_run,
             commands::clear_transcripts,
             commands::delete_summary,
+            commands::set_speaker_label,
+            commands::get_speaker_labels,
             commands::update_segment,
             // summary
             commands::generate_summary,

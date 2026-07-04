@@ -8,7 +8,7 @@
  * a summary selector. Older versions can be deleted.
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useMeetingDetail } from "@/hooks/useMeetings";
 import { useTranscription } from "@/hooks/useTranscription";
 import { useRecordingStore } from "@/stores/recordingStore";
@@ -232,6 +232,12 @@ function TranscriptTab({
   const latestRunId = runs[0]?.id ?? null;
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [runSegments, setRunSegments] = useState<TranscriptSegment[] | null>(null);
+  const [labels, setLabels] = useState<Record<string, string>>({});
+
+  const reloadLabels = useCallback(() => {
+    void api.getSpeakerLabels(meetingId).then(setLabels).catch(() => {});
+  }, [meetingId]);
+  useEffect(() => reloadLabels(), [reloadLabels]);
 
   const isLatest = !selectedRunId || selectedRunId === latestRunId;
   const shown = isLatest ? latestSegments : runSegments ?? [];
@@ -309,7 +315,13 @@ function TranscriptTab({
 
       <RetranscribePanel meetingId={meetingId} onStarted={onTranscribeStarted} />
 
-      <Transcript segments={shown} readOnly={readOnlyBase || !isLatest} />
+      <Transcript
+        segments={shown}
+        readOnly={readOnlyBase || !isLatest}
+        labels={labels}
+        meetingId={meetingId}
+        onRelabel={reloadLabels}
+      />
     </div>
   );
 }

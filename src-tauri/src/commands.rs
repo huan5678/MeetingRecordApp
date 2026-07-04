@@ -564,6 +564,32 @@ pub fn delete_summary(state: State<'_, AppState>, summary_id: String) -> Result<
     lock_db(&state)?.delete_summary(&summary_id).map_err(err)
 }
 
+/// Set (or rename) the display name for a diarization speaker label in a
+/// meeting (the label-once UI). Segments keep their raw label; the frontend
+/// resolves the display name via `get_speaker_labels`.
+#[tauri::command]
+pub fn set_speaker_label(
+    state: State<'_, AppState>,
+    meeting_id: String,
+    raw_label: String,
+    display_name: String,
+) -> Result<(), String> {
+    lock_db(&state)?
+        .set_speaker_label(&meeting_id, &raw_label, &display_name)
+        .map_err(err)
+}
+
+/// All speaker-label display names for a meeting, keyed by raw diarization
+/// label (e.g. `{"Speaker 1": "Alice"}`). The frontend maps each segment's raw
+/// `speaker` through this for display.
+#[tauri::command]
+pub fn get_speaker_labels(
+    state: State<'_, AppState>,
+    meeting_id: String,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    lock_db(&state)?.speaker_labels(&meeting_id).map_err(err)
+}
+
 /// Delete a meeting: DB rows (cascaded) *and* the on-disk media directory.
 #[tauri::command]
 pub fn delete_meeting(state: State<'_, AppState>, id: String) -> Result<(), String> {

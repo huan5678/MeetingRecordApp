@@ -61,8 +61,8 @@
 ### C3 — 命名層:`speaker_labels` + resolve-at-read + 標一次 UI(核心新 UX)
 
 - 新表 `speaker_labels(meeting_id TEXT, raw_label TEXT, display_name TEXT, source TEXT, PRIMARY KEY(meeting_id, raw_label))`。加法式、`CREATE … IF NOT EXISTS`、冪等(對齊 `database.rs` 無 version-table 慣例)。
-- 讀 segments 時(`list_transcript_segments` / `get_meeting_detail`):LEFT JOIN,有 label 就用 `display_name` 覆蓋 `speaker`。**不動 `transcript_segments`,非破壞性、可重命名。**
-- 新指令 `set_speaker_label(meeting_id, raw_label, display_name)`(+ `mockInvoke` case)→ upsert 一列(`source='manual'`)。前端:逐字稿的 speaker chip 可點 → 輸入名字 → 全稿該群即時更新。
+- **解析放前端**(實作定案):segments 一律保留**原始** `speaker`(`"Speaker N"`),不在後端 overlay 覆寫;前端用 `get_speaker_labels(meeting_id)` 拿 `{raw → display}`,渲染時 `labels[raw] ?? raw`。這樣 rename 永遠以**原始標籤**為 key,顯示名可無限次重改(overlay-at-read 會把 `speaker` 換成顯示名 → 二次改名找不到原始 key)。export/summary 拿真名列後續(在各自出口點解析)。
+- 新指令 `set_speaker_label(meeting_id, raw_label, display_name)` + `get_speaker_labels(meeting_id)`(+ `mockInvoke` 有狀態 store)。前端:逐字稿 speaker chip 可點 → 輸入名字 → `onRelabel` 重載 labels → 全稿該群即時更新。
 - roster 前置 prompt(既有 Path C / identity-SRT U5 Phase 3):把已知名字集合前置到**摘要** prompt,補洞。
 
 ### C4 — 身分 provider(可選,自動 pre-fill C3)

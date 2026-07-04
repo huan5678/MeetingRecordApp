@@ -11,6 +11,8 @@
 //! files shipped alongside the executable). Re-running the migration is safe:
 //! every statement is `CREATE ... IF NOT EXISTS`.
 
+use std::collections::HashMap;
+
 use rusqlite::{Connection, OptionalExtension, Row};
 
 use crate::models::{
@@ -25,6 +27,13 @@ const MIGRATION_001: &str = include_str!("../../migrations/001_initial.sql");
 
 /// Migration 002: versioned transcripts (`transcript_runs` + the `run_id` link).
 const MIGRATION_002: &str = include_str!("../../migrations/002_transcript_runs.sql");
+
+/// Migration 003: `speaker_labels` — the merge table that maps a run's raw
+/// diarization label (e.g. `"Speaker 1"`) to a real display name, filled by the
+/// manual label-once UI (and later by identity providers / voiceprint memory).
+/// Segments keep their raw label; the frontend resolves display via
+/// [`Database::speaker_labels`] so a name can always be re-edited.
+const MIGRATION_003: &str = include_str!("../../migrations/003_speaker_labels.sql");
 
 /// A handle to the application's SQLite database.
 pub struct Database {
@@ -62,6 +71,7 @@ impl Database {
         self.conn.execute_batch(MIGRATION_001)?;
         self.ensure_column("transcript_segments", "run_id", "TEXT")?;
         self.conn.execute_batch(MIGRATION_002)?;
+        self.conn.execute_batch(MIGRATION_003)?;
         Ok(())
     }
 
@@ -391,6 +401,43 @@ impl Database {
             out.push(r?);
         }
         Ok(out)
+    }
+
+    // -- speaker labels -----------------------------------------------------
+
+    /// Upsert a manual speaker label: map `raw_label` (a run's diarization
+    /// label, e.g. `"Speaker 1"`) to `display_name` for this meeting.
+    /// Re-labelling the same raw label overwrites the previous name.
+    pub fn set_speaker_label(
+        &self,
+        meeting_id: &str,
+        raw_label: &str,
+        display_name: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO speaker_labels (meeting_id, raw_label, display_name, source)
+             VALUES (?1, ?2, ?3, 'manual')
+             ON CONFLICT(meeting_id, raw_label)
+             DO UPDATE SET display_name = excluded.display_name, source = 'manual'",
+            rusqlite::params![meeting_id, raw_label, display_name],
+        )?;
+        Ok(())
+    }
+
+    /// All speaker labels for a meeting, keyed by raw diarization label.
+    pub fn speaker_labels(&self, meeting_id: &str) -> Result<HashMap<String, String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT raw_label, display_name FROM speaker_labels WHERE meeting_id = ?1",
+        )?;
+        let rows = stmt.query_map([meeting_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        let mut map = HashMap::new();
+        for r in rows {
+            let (raw, name) = r?;
+            map.insert(raw, name);
+        }
+        Ok(map)
     }
 
     // -- transcript runs ----------------------------------------------------
@@ -825,6 +872,7 @@ mod tests {
             "summaries",
             "settings",
             "transcript_fts",
+            "speaker_labels",
         ] {
             assert!(
                 names.iter().any(|n| n == expected),
@@ -838,6 +886,29 @@ mod tests {
         let db = new_db();
         // A second run must not error (every statement is IF NOT EXISTS).
         db.run_migrations().expect("second migration run");
+    }
+
+    #[test]
+    fn set_speaker_label_roundtrips_and_upserts() {
+        let db = new_db();
+        db.insert_meeting(&sample_meeting("m1")).unwrap();
+
+        db.set_speaker_label("m1", "Speaker 1", "Alice").unwrap();
+        db.set_speaker_label("m1", "Speaker 2", "Bob").unwrap();
+
+        let labels = db.speaker_labels("m1").unwrap();
+        assert_eq!(labels.get("Speaker 1").map(String::as_str), Some("Alice"));
+        assert_eq!(labels.get("Speaker 2").map(String::as_str), Some("Bob"));
+
+        // Re-labelling the same raw label overwrites (upsert), not duplicates:
+        // the segment keeps its raw "Speaker 1", so the name is always editable.
+        db.set_speaker_label("m1", "Speaker 1", "Alicia").unwrap();
+        let labels = db.speaker_labels("m1").unwrap();
+        assert_eq!(labels.len(), 2);
+        assert_eq!(labels.get("Speaker 1").map(String::as_str), Some("Alicia"));
+
+        // Labels are scoped per meeting.
+        assert!(db.speaker_labels("m2").unwrap().is_empty());
     }
 
     #[test]
