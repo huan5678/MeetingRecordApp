@@ -3,7 +3,12 @@
   "bundle": {
     "resources": {
       "resources/models/sherpa-segmentation.onnx": "models/sherpa-segmentation.onnx",
-      "resources/models/sherpa-embedding.onnx": "models/sherpa-embedding.onnx"
+      "resources/models/sherpa-embedding.onnx": "models/sherpa-embedding.onnx",
+      "target/release/sherpa-onnx-c-api.dll": "sherpa-onnx-c-api.dll",
+      "target/release/sherpa-onnx-cxx-api.dll": "sherpa-onnx-cxx-api.dll",
+      "target/release/onnxruntime.dll": "onnxruntime.dll",
+      "target/release/onnxruntime_providers_shared.dll": "onnxruntime_providers_shared.dll",
+      "target/release/cargs.dll": "cargs.dll"
     }
   }
 }
