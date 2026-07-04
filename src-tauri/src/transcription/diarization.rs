@@ -64,6 +64,23 @@ pub fn assign_speakers(segments: &[RawSegment], turns: &[SpeakerTurn]) -> Vec<Op
         .collect()
 }
 
+/// Overlay diarization turns onto transcript segments in place: where a turn
+/// covers a segment, override its `speaker` with `"Speaker N"`. Segments with
+/// no overlapping turn keep their existing `speaker` — so a Gemini-provided
+/// label survives when diarization is unavailable (i.e. the `diarize` feature
+/// is off → empty `turns` → no-op, no regression). Used by the Gemini path,
+/// where diarization owns segmentation but Gemini text is the fallback labeller.
+pub fn apply_turns_to_segments(
+    segments: &mut [crate::models::TranscriptSegment],
+    turns: &[SpeakerTurn],
+) {
+    for seg in segments.iter_mut() {
+        if let Some(id) = best_speaker_for(seg.start_time_ms, seg.end_time_ms, turns) {
+            seg.speaker = Some(speaker_label(id));
+        }
+    }
+}
+
 /// Find the speaker id with the greatest total overlap against
 /// `[start_ms, end_ms)`. Returns `None` if nothing overlaps.
 fn best_speaker_for(start_ms: i64, end_ms: i64, turns: &[SpeakerTurn]) -> Option<u32> {
@@ -188,6 +205,46 @@ mod tests {
     fn label_is_one_based() {
         assert_eq!(speaker_label(0), "Speaker 1");
         assert_eq!(speaker_label(3), "Speaker 4");
+    }
+
+    fn tseg(start_ms: i64, end_ms: i64, speaker: Option<&str>) -> crate::models::TranscriptSegment {
+        crate::models::TranscriptSegment {
+            id: String::new(),
+            meeting_id: String::new(),
+            segment_index: 0,
+            start_time_ms: start_ms,
+            end_time_ms: end_ms,
+            text: "hi".into(),
+            speaker: speaker.map(str::to_string),
+            confidence: None,
+            language: None,
+            created_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn apply_turns_overrides_where_covered_and_keeps_the_rest() {
+        // seg0 fully inside turn0; seg1 mostly turn1; seg2 has no turn coverage.
+        let mut segs = vec![
+            tseg(0, 1000, Some("講者 1")),
+            tseg(1000, 2000, Some("講者 1")),
+            tseg(5000, 6000, Some("講者 2")),
+        ];
+        let turns = vec![turn(0, 1000, 0), turn(1000, 2000, 1)];
+
+        apply_turns_to_segments(&mut segs, &turns);
+
+        assert_eq!(segs[0].speaker.as_deref(), Some("Speaker 1")); // overridden
+        assert_eq!(segs[1].speaker.as_deref(), Some("Speaker 2")); // overridden
+        assert_eq!(segs[2].speaker.as_deref(), Some("講者 2")); // no turn → kept (no regression)
+    }
+
+    #[test]
+    fn apply_turns_empty_is_a_noop() {
+        let mut segs = vec![tseg(0, 1000, Some("講者 1")), tseg(1000, 2000, None)];
+        apply_turns_to_segments(&mut segs, &[]); // diarize feature off → no turns
+        assert_eq!(segs[0].speaker.as_deref(), Some("講者 1")); // Gemini label survives
+        assert_eq!(segs[1].speaker, None);
     }
 
     #[test]

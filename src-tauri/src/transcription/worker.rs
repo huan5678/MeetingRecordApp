@@ -184,6 +184,38 @@ fn apply_speaker_identity(wav_path: &PathBuf, segments: &mut [crate::models::Tra
     );
 }
 
+/// Run local diarization over the Gemini transcript's own audio and stamp each
+/// segment with its acoustic speaker ("Speaker N"), overriding Gemini's guess.
+/// Diarization models are bundled with the app (tauri resource dir). Best-effort:
+/// any failure (missing models, decode error) leaves Gemini's labels untouched.
+/// Compiled in only with the `diarize` feature (sherpa-onnx native); without it
+/// the caller skips this entirely.
+#[cfg(feature = "diarize")]
+fn diarize_gemini_segments(
+    app: &AppHandle,
+    wav_path: &PathBuf,
+    segments: &mut [crate::models::TranscriptSegment],
+) {
+    use tauri::Manager;
+    let Ok(pcm) = crate::transcription::processor::Processor::load_wav_16k_mono(wav_path) else {
+        return;
+    };
+    let Ok(res_dir) = app.path().resource_dir() else {
+        return;
+    };
+    let model_dir = res_dir.join("models");
+    let diarizer = crate::transcription::diarization::Diarizer::new(
+        crate::transcription::diarization::DiarizeConfig {
+            segmentation_model: model_dir.join("sherpa-segmentation.onnx"),
+            embedding_model: model_dir.join("sherpa-embedding.onnx"),
+            num_speakers: None,
+        },
+    );
+    if let Ok(turns) = diarizer.diarize(&pcm) {
+        crate::transcription::diarization::apply_turns_to_segments(segments, &turns);
+    }
+}
+
 /// Gemini multimodal engine: upload the WAV, get transcript + summary in one
 /// call, persist both, mark the meeting Completed. Returns `Err(msg)` on any
 /// failure so the caller can fall back to whisper.
@@ -244,6 +276,14 @@ fn try_gemini(
             },
         ))
         .map_err(|e| e.to_string())?;
+
+    // Diarization owns segmentation: override Gemini's speaker guesses with the
+    // real acoustic "Speaker N" clusters where diarization covers a segment.
+    // No-op without the `diarize` feature (empty turns → Gemini's own label
+    // survives, no regression). Runs BEFORE the identity sidecar so real names
+    // can overlay on top of the baseline speaker.
+    #[cfg(feature = "diarize")]
+    diarize_gemini_segments(app, wav_path, &mut res.segments);
 
     // Overlay real speaker names from the recording's identity sidecar, if any.
     apply_speaker_identity(wav_path, &mut res.segments);
