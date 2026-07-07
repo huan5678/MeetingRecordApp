@@ -574,8 +574,12 @@ pub fn set_speaker_label(
     raw_label: String,
     display_name: String,
 ) -> Result<(), String> {
-    lock_db(&state)?
-        .set_speaker_label(&meeting_id, &raw_label, &display_name)
+    let db = lock_db(&state)?;
+    db.set_speaker_label(&meeting_id, &raw_label, &display_name)
+        .map_err(err)?;
+    // Enroll this speaker's voiceprint (if diarization staged one) so recurring
+    // speakers auto-name in future meetings. No-op without the diarize feature.
+    db.enroll_voiceprint_from_cluster(&meeting_id, &raw_label, &display_name)
         .map_err(err)
 }
 

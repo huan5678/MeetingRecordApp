@@ -193,9 +193,12 @@ fn apply_speaker_identity(wav_path: &PathBuf, segments: &mut [crate::models::Tra
 #[cfg(feature = "diarize")]
 fn diarize_gemini_segments(
     app: &AppHandle,
+    state: &State<'_, AppState>,
+    meeting_id: &str,
     wav_path: &PathBuf,
     segments: &mut [crate::models::TranscriptSegment],
 ) {
+    use crate::transcription::diarization as d;
     use tauri::Manager;
     let Ok(pcm) = crate::transcription::processor::Processor::load_wav_16k_mono(wav_path) else {
         return;
@@ -204,15 +207,81 @@ fn diarize_gemini_segments(
         return;
     };
     let model_dir = res_dir.join("models");
-    let diarizer = crate::transcription::diarization::Diarizer::new(
-        crate::transcription::diarization::DiarizeConfig {
-            segmentation_model: model_dir.join("sherpa-segmentation.onnx"),
-            embedding_model: model_dir.join("sherpa-embedding.onnx"),
-            num_speakers: None,
-        },
-    );
-    if let Ok(turns) = diarizer.diarize(&pcm) {
-        crate::transcription::diarization::apply_turns_to_segments(segments, &turns);
+    let diarizer = d::Diarizer::new(d::DiarizeConfig {
+        segmentation_model: model_dir.join("sherpa-segmentation.onnx"),
+        embedding_model: model_dir.join("sherpa-embedding.onnx"),
+        num_speakers: None,
+    });
+    let Ok(turns) = diarizer.diarize(&pcm) else {
+        return;
+    };
+    d::apply_turns_to_segments(segments, &turns);
+    if !turns.is_empty() {
+        // Phase 3: embed each acoustic cluster, stage it, and auto-name recurring
+        // speakers from the enrolled voiceprint library. Best-effort.
+        voiceprint_clusters(state, meeting_id, &model_dir, &pcm, &turns);
+    }
+}
+
+/// Compute a voiceprint per diarization cluster, stage it for later enrollment,
+/// and prefill any cluster matching an enrolled speaker with their name
+/// (`source = 'voiceprint'`). Embedding extraction is slow, so it runs WITHOUT
+/// holding the db lock; persistence happens under one short lock afterwards.
+#[cfg(feature = "diarize")]
+fn voiceprint_clusters(
+    state: &State<'_, AppState>,
+    meeting_id: &str,
+    model_dir: &std::path::Path,
+    pcm: &[f32],
+    turns: &[crate::transcription::diarization::SpeakerTurn],
+) {
+    use crate::transcription::diarization as d;
+    use sherpa_rs::speaker_id::{EmbeddingExtractor, ExtractorConfig};
+
+    // Distinct cluster ids, ascending.
+    let mut ids: Vec<u32> = turns.iter().map(|t| t.speaker_id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+
+    let Ok(mut extractor) = EmbeddingExtractor::new(ExtractorConfig {
+        model: model_dir
+            .join("sherpa-embedding.onnx")
+            .to_string_lossy()
+            .into_owned(),
+        provider: None,
+        num_threads: None,
+        debug: false,
+    }) else {
+        return;
+    };
+
+    // Enrolled library, decoded once, for matching.
+    let enrolled = match state.db.lock() {
+        Ok(db) => db.enrolled_voiceprints().unwrap_or_default(),
+        Err(_) => return,
+    };
+
+    // (raw_label, embedding, matched_name) — computed lock-free.
+    let mut staged: Vec<(String, Vec<f32>, Option<String>)> = Vec::new();
+    for id in ids {
+        let cluster = d::cluster_pcm_for(turns, pcm, id, 16_000);
+        if cluster.is_empty() {
+            continue;
+        }
+        let Ok(emb) = extractor.compute_speaker_embedding(cluster, 16_000) else {
+            continue;
+        };
+        let matched = d::best_voiceprint_match(&emb, &enrolled, d::VOICEPRINT_MATCH_THRESHOLD);
+        staged.push((d::speaker_label(id), emb, matched));
+    }
+
+    if let Ok(db) = state.db.lock() {
+        for (raw_label, emb, matched) in staged {
+            let _ = db.store_cluster_embedding(meeting_id, &raw_label, &emb);
+            if let Some(name) = matched {
+                let _ = db.prefill_speaker_label_from_voiceprint(meeting_id, &raw_label, &name);
+            }
+        }
     }
 }
 
@@ -283,7 +352,7 @@ fn try_gemini(
     // survives, no regression). Runs BEFORE the identity sidecar so real names
     // can overlay on top of the baseline speaker.
     #[cfg(feature = "diarize")]
-    diarize_gemini_segments(app, wav_path, &mut res.segments);
+    diarize_gemini_segments(app, state, meeting_id, wav_path, &mut res.segments);
 
     // Overlay real speaker names from the recording's identity sidecar, if any.
     apply_speaker_identity(wav_path, &mut res.segments);

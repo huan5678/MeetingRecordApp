@@ -35,6 +35,25 @@ const MIGRATION_002: &str = include_str!("../../migrations/002_transcript_runs.s
 /// [`Database::speaker_labels`] so a name can always be re-edited.
 const MIGRATION_003: &str = include_str!("../../migrations/003_speaker_labels.sql");
 
+/// Migration 004: cross-meeting voiceprint memory — `meeting_cluster_embeddings`
+/// (per-cluster embeddings staged at transcription time) and `speaker_voiceprints`
+/// (the enrolled per-name library). See [`Database::enrolled_voiceprints`].
+const MIGRATION_004: &str = include_str!("../../migrations/004_speaker_voiceprints.sql");
+
+/// Encode a speaker embedding as little-endian `f32` bytes for BLOB storage.
+fn embedding_to_blob(emb: &[f32]) -> Vec<u8> {
+    emb.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+/// Decode a little-endian `f32` BLOB back into an embedding (trailing partial
+/// bytes are ignored).
+fn blob_to_embedding(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
+}
+
 /// A handle to the application's SQLite database.
 pub struct Database {
     conn: Connection,
@@ -72,6 +91,7 @@ impl Database {
         self.ensure_column("transcript_segments", "run_id", "TEXT")?;
         self.conn.execute_batch(MIGRATION_002)?;
         self.conn.execute_batch(MIGRATION_003)?;
+        self.conn.execute_batch(MIGRATION_004)?;
         Ok(())
     }
 
@@ -438,6 +458,104 @@ impl Database {
             map.insert(raw, name);
         }
         Ok(map)
+    }
+
+    // -- voiceprint memory (Phase 3) ---------------------------------------
+
+    /// Prefill a speaker label from a voiceprint match, marking `source =
+    /// 'voiceprint'`. Never overwrites an existing label (manual or prior
+    /// voiceprint) — the user's naming always wins.
+    pub fn prefill_speaker_label_from_voiceprint(
+        &self,
+        meeting_id: &str,
+        raw_label: &str,
+        display_name: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO speaker_labels (meeting_id, raw_label, display_name, source)
+             VALUES (?1, ?2, ?3, 'voiceprint')
+             ON CONFLICT(meeting_id, raw_label) DO NOTHING",
+            rusqlite::params![meeting_id, raw_label, display_name],
+        )?;
+        Ok(())
+    }
+
+    /// Stage a diarization cluster's embedding for a meeting (upsert). Called at
+    /// transcription time so a later manual label can enroll it by name.
+    pub fn store_cluster_embedding(
+        &self,
+        meeting_id: &str,
+        raw_label: &str,
+        embedding: &[f32],
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO meeting_cluster_embeddings (meeting_id, raw_label, embedding, dim)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(meeting_id, raw_label)
+             DO UPDATE SET embedding = excluded.embedding, dim = excluded.dim",
+            rusqlite::params![
+                meeting_id,
+                raw_label,
+                embedding_to_blob(embedding),
+                embedding.len() as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The staged embedding for one meeting cluster, if present.
+    pub fn cluster_embedding(
+        &self,
+        meeting_id: &str,
+        raw_label: &str,
+    ) -> Result<Option<Vec<f32>>> {
+        self.conn
+            .query_row(
+                "SELECT embedding FROM meeting_cluster_embeddings
+                 WHERE meeting_id = ?1 AND raw_label = ?2",
+                rusqlite::params![meeting_id, raw_label],
+                |r| r.get::<_, Vec<u8>>(0),
+            )
+            .optional()?
+            .map(|b| Ok(blob_to_embedding(&b)))
+            .transpose()
+    }
+
+    /// Promote a meeting cluster's staged embedding into the named voiceprint
+    /// library (upsert — re-labelling refreshes the voiceprint). No-op when no
+    /// embedding was staged for that cluster (diarize off, legacy meeting).
+    pub fn enroll_voiceprint_from_cluster(
+        &self,
+        meeting_id: &str,
+        raw_label: &str,
+        display_name: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO speaker_voiceprints (name, embedding, dim)
+             SELECT ?3, embedding, dim FROM meeting_cluster_embeddings
+             WHERE meeting_id = ?1 AND raw_label = ?2
+             ON CONFLICT(name) DO UPDATE SET
+                 embedding = excluded.embedding, dim = excluded.dim",
+            rusqlite::params![meeting_id, raw_label, display_name],
+        )?;
+        Ok(())
+    }
+
+    /// All enrolled voiceprints as `(name, embedding)`, for matching a fresh
+    /// cluster against known speakers.
+    pub fn enrolled_voiceprints(&self) -> Result<Vec<(String, Vec<f32>)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name, embedding FROM speaker_voiceprints")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            let (name, blob) = r?;
+            out.push((name, blob_to_embedding(&blob)));
+        }
+        Ok(out)
     }
 
     // -- transcript runs ----------------------------------------------------
@@ -873,6 +991,8 @@ mod tests {
             "settings",
             "transcript_fts",
             "speaker_labels",
+            "meeting_cluster_embeddings",
+            "speaker_voiceprints",
         ] {
             assert!(
                 names.iter().any(|n| n == expected),
@@ -909,6 +1029,73 @@ mod tests {
 
         // Labels are scoped per meeting.
         assert!(db.speaker_labels("m2").unwrap().is_empty());
+    }
+
+    #[test]
+    fn embedding_blob_codec_roundtrips() {
+        let emb = vec![0.0f32, -0.25, 3.5, 1e-9, f32::MIN_POSITIVE];
+        assert_eq!(blob_to_embedding(&embedding_to_blob(&emb)), emb);
+        // A truncated (non-multiple-of-4) blob decodes the whole floats only.
+        assert_eq!(blob_to_embedding(&[0, 0]), Vec::<f32>::new());
+    }
+
+    #[test]
+    fn cluster_embedding_roundtrips_and_upserts() {
+        let db = new_db();
+        assert!(db.cluster_embedding("m1", "Speaker 1").unwrap().is_none());
+
+        db.store_cluster_embedding("m1", "Speaker 1", &[0.1, 0.2, 0.3]).unwrap();
+        assert_eq!(
+            db.cluster_embedding("m1", "Speaker 1").unwrap(),
+            Some(vec![0.1, 0.2, 0.3])
+        );
+        // Re-storing the same cluster overwrites, not duplicates.
+        db.store_cluster_embedding("m1", "Speaker 1", &[0.9]).unwrap();
+        assert_eq!(db.cluster_embedding("m1", "Speaker 1").unwrap(), Some(vec![0.9]));
+    }
+
+    #[test]
+    fn enroll_promotes_cluster_embedding_into_named_library() {
+        let db = new_db();
+        db.store_cluster_embedding("m1", "Speaker 1", &[1.0, 0.0]).unwrap();
+
+        db.enroll_voiceprint_from_cluster("m1", "Speaker 1", "Alice").unwrap();
+        let lib = db.enrolled_voiceprints().unwrap();
+        assert_eq!(lib, vec![("Alice".to_string(), vec![1.0, 0.0])]);
+
+        // Re-labelling the same name refreshes its voiceprint (upsert).
+        db.store_cluster_embedding("m2", "Speaker 2", &[0.0, 1.0]).unwrap();
+        db.enroll_voiceprint_from_cluster("m2", "Speaker 2", "Alice").unwrap();
+        let lib = db.enrolled_voiceprints().unwrap();
+        assert_eq!(lib, vec![("Alice".to_string(), vec![0.0, 1.0])]);
+    }
+
+    #[test]
+    fn enroll_without_cluster_embedding_is_a_noop() {
+        let db = new_db();
+        db.enroll_voiceprint_from_cluster("m1", "Speaker 1", "Ghost").unwrap();
+        assert!(db.enrolled_voiceprints().unwrap().is_empty());
+    }
+
+    #[test]
+    fn voiceprint_prefill_never_overwrites_a_manual_label() {
+        let db = new_db();
+        db.insert_meeting(&sample_meeting("m1")).unwrap();
+
+        // No label yet → prefill writes a voiceprint-sourced name.
+        db.prefill_speaker_label_from_voiceprint("m1", "Speaker 1", "Alice").unwrap();
+        assert_eq!(
+            db.speaker_labels("m1").unwrap().get("Speaker 1").map(String::as_str),
+            Some("Alice")
+        );
+
+        // A manual label exists → prefill must NOT clobber it.
+        db.set_speaker_label("m1", "Speaker 2", "Bob").unwrap();
+        db.prefill_speaker_label_from_voiceprint("m1", "Speaker 2", "WrongGuess").unwrap();
+        assert_eq!(
+            db.speaker_labels("m1").unwrap().get("Speaker 2").map(String::as_str),
+            Some("Bob")
+        );
     }
 
     #[test]

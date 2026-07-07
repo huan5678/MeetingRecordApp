@@ -1,6 +1,6 @@
 # 04 — 聲紋記憶(跨會議自動命名)
 
-Status: ready-for-agent(可行性已確認;可開工)
+Status: in-progress(04a–04c 碼完成 + Mac 測綠;04d 選配跳過;runtime 需 Windows diarize build 驗)
 Type: AFK(碼可 Mac 測)/ Windows 手測(gated 抽取 + 準度調校)
 
 Spec: `docs/superpowers/specs/2026-07-04-speaker-attribution-core-design.md` §C3 §分期 Phase 3
@@ -60,13 +60,14 @@ BLOB 編碼:`f32` 直接 `to_le_bytes` 串接;解碼 `chunks_exact(4)` → `f32:
 
 ## Acceptance criteria
 
-- [ ] migration `004`:兩表建立,加法式、`IF NOT EXISTS`、冪等、無 version table;migration 建表測試涵蓋
-- [ ] BLOB 編解碼 round-trip 純函式測(`Vec<f32>` ↔ bytes,含 dim 驗證)
-- [ ] 04a:`cluster_pcm_for` 純函式測(依 turns 時間段切對 PCM);gated 抽取接線(邏輯 + Windows 驗)
-- [ ] 04b:`set_speaker_label` 手動命名後,`speaker_voiceprints` 出現該名字那列(Rust roundtrip 測,用假 embedding)
-- [ ] 04c:cosine + argmax + 門檻純函式測(命中/未命中/多庫最佳);命中時 `speaker_labels` 出現 `source='voiceprint'` 列
-- [ ] 預設(無 `diarize`)`cargo test` 全綠、兩表空、零回歸
+- [x] migration `004`:兩表建立,加法式、`IF NOT EXISTS`、冪等、無 version table;migration 建表測試涵蓋
+- [x] BLOB 編解碼 round-trip 純函式測(`Vec<f32>` ↔ bytes)
+- [x] 04a:`cluster_pcm_for` 純函式測(依 turns 時間段切對 PCM,含越界 clamp);gated 抽取接線(`voiceprint_clusters`,邏輯 + Windows 驗)
+- [x] 04b:手動命名後 `enroll_voiceprint_from_cluster` 把該群聲紋登錄進 `speaker_voiceprints`(Rust roundtrip 測,含 upsert / 無群 no-op);`set_speaker_label` 指令接線
+- [x] 04c:`best_voiceprint_match`(cosine + argmax + 門檻)純函式測(命中/未命中/多庫最佳/空庫);`prefill_speaker_label_from_voiceprint` 用 `DO NOTHING` 不蓋手動標籤(測)
+- [x] 預設(無 `diarize`)`cargo test` 全綠(265)、兩表空、零回歸;前端 43 綠
 - [ ] (Windows 手測)A 場標「Speaker 1 → 某人」→ B 場同人自動預填該名;門檻可調
+- [~] 04d 來源標示 chip(選配):**跳過**。`source` 已存 DB,但 `get_speaker_labels` 只回 `{raw→display}`;加徽章要改 IPC 回傳形狀 + 前端,列後續按需再做。
 
 ## 天花板 / 未知(給 `ponytail:` 註解)
 

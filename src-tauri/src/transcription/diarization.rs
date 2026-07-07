@@ -135,6 +135,73 @@ fn best_speaker_for(start_ms: i64, end_ms: i64, turns: &[SpeakerTurn]) -> Option
         .map(|(id, _)| id)
 }
 
+// -- voiceprint memory (Phase 3) ------------------------------------------
+//
+// Pure helpers for cross-meeting speaker memory. Embedding *extraction* needs
+// sherpa (feature-gated, in the worker); these — slicing a cluster's audio and
+// matching a fresh embedding against the enrolled library — are pure and tested
+// here regardless of feature.
+
+/// Cosine-similarity floor for treating a fresh cluster as a known enrolled
+/// speaker. sherpa's own default; tune on Windows for far-field meeting-room
+/// audio.
+// ponytail: 0.5 is sherpa's default — raise if false matches, lower if misses.
+pub const VOICEPRINT_MATCH_THRESHOLD: f32 = 0.5;
+
+/// Concatenate the PCM samples belonging to one speaker's diarization turns,
+/// so the result can be fed to the embedding extractor as that speaker's signal.
+/// `sample_rate` maps turn milliseconds to sample indices; turns running past
+/// the buffer are clamped (never panics).
+pub fn cluster_pcm_for(
+    turns: &[SpeakerTurn],
+    pcm: &[f32],
+    speaker_id: u32,
+    sample_rate: u32,
+) -> Vec<f32> {
+    let to_idx = |ms: i64| ((ms.max(0) * sample_rate as i64) / 1000) as usize;
+    let mut out = Vec::new();
+    for t in turns.iter().filter(|t| t.speaker_id == speaker_id) {
+        let lo = to_idx(t.start_ms).min(pcm.len());
+        let hi = to_idx(t.end_ms).min(pcm.len()).max(lo);
+        out.extend_from_slice(&pcm[lo..hi]);
+    }
+    out
+}
+
+/// Cosine similarity of two vectors; 0.0 if lengths differ or either is zero.
+fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() {
+        return 0.0;
+    }
+    let (mut dot, mut na, mut nb) = (0f32, 0f32, 0f32);
+    for (x, y) in a.iter().zip(b) {
+        dot += x * y;
+        na += x * x;
+        nb += y * y;
+    }
+    if na == 0.0 || nb == 0.0 {
+        return 0.0;
+    }
+    dot / (na.sqrt() * nb.sqrt())
+}
+
+/// Name of the enrolled voiceprint most similar to `emb`, if any scores at or
+/// above `threshold`. `library` is `(name, embedding)`.
+// ponytail: single best (argmax); add a best-vs-second margin if false matches
+// show up in the field.
+pub fn best_voiceprint_match(
+    emb: &[f32],
+    library: &[(String, Vec<f32>)],
+    threshold: f32,
+) -> Option<String> {
+    library
+        .iter()
+        .map(|(name, v)| (name, cosine(emb, v)))
+        .filter(|(_, s)| *s >= threshold)
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(name, _)| name.clone())
+}
+
 /// Configuration for the diarizer: paths to the sherpa-onnx models and an
 /// optional fixed speaker count.
 #[derive(Debug, Clone)]
@@ -362,6 +429,66 @@ mod tests {
         let segs = vec![seg(1000, 1000)];
         let turns = vec![turn(0, 2000, 0)];
         assert_eq!(assign_speakers(&segs, &turns), vec![None]);
+    }
+
+    #[test]
+    fn cluster_pcm_gathers_only_that_speakers_turns() {
+        // 1 sample per ms (sample_rate 1000) so sample index == ms. pcm[i] == i.
+        let pcm: Vec<f32> = (0..2000).map(|i| i as f32).collect();
+        let turns = vec![turn(0, 500, 0), turn(1000, 1500, 1), turn(1500, 2000, 0)];
+
+        // Speaker 0 owns [0,500) and [1500,2000) → 1000 samples, concatenated.
+        let got = cluster_pcm_for(&turns, &pcm, 0, 1000);
+        assert_eq!(got.len(), 1000);
+        assert_eq!(got[0], 0.0); // first sample of first turn
+        assert_eq!(got[500], 1500.0); // first sample of second turn
+    }
+
+    #[test]
+    fn cluster_pcm_clamps_out_of_range_turns() {
+        let pcm: Vec<f32> = (0..100).map(|i| i as f32).collect();
+        // Turn runs past the buffer end; must clamp, not panic.
+        let turns = vec![turn(0, 999_000, 0)];
+        let got = cluster_pcm_for(&turns, &pcm, 0, 1000);
+        assert_eq!(got.len(), 100);
+    }
+
+    #[test]
+    fn voiceprint_match_returns_name_on_exact_hit() {
+        let lib = vec![
+            ("Alice".to_string(), vec![1.0, 0.0, 0.0]),
+            ("Bob".to_string(), vec![0.0, 1.0, 0.0]),
+        ];
+        // Identical to Alice's vector → cosine 1.0.
+        assert_eq!(
+            best_voiceprint_match(&[1.0, 0.0, 0.0], &lib, VOICEPRINT_MATCH_THRESHOLD),
+            Some("Alice".to_string())
+        );
+    }
+
+    #[test]
+    fn voiceprint_match_picks_highest_cosine() {
+        let lib = vec![
+            ("Alice".to_string(), vec![1.0, 0.0]),
+            ("Bob".to_string(), vec![0.7, 0.7]),
+        ];
+        // [0.9,0.1] is closer in angle to Alice than Bob.
+        assert_eq!(
+            best_voiceprint_match(&[0.9, 0.1], &lib, 0.5),
+            Some("Alice".to_string())
+        );
+    }
+
+    #[test]
+    fn voiceprint_match_below_threshold_is_none() {
+        let lib = vec![("Alice".to_string(), vec![1.0, 0.0])];
+        // Orthogonal → cosine 0.0 < 0.5.
+        assert_eq!(best_voiceprint_match(&[0.0, 1.0], &lib, 0.5), None);
+    }
+
+    #[test]
+    fn voiceprint_match_empty_library_is_none() {
+        assert_eq!(best_voiceprint_match(&[1.0, 0.0], &[], 0.5), None);
     }
 
     #[cfg(not(feature = "diarize"))]
