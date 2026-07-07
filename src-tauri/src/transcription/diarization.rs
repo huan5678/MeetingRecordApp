@@ -202,17 +202,35 @@ pub fn best_voiceprint_match(
         .map(|(name, _)| name.clone())
 }
 
-/// Configuration for the diarizer: paths to the sherpa-onnx models and an
-/// optional fixed speaker count.
+/// Default cosine-distance clustering threshold for auto speaker-count mode.
+/// Higher merges more (fewer speakers). Tuned on real meeting audio: sherpa's
+/// own default (0.5) over-clusters badly (a 6-person meeting → 13+ clusters);
+/// ~0.75 tracks the real count for a mixed/unknown headcount.
+// ponytail: 0.75 from a one-meeting sweep — revisit per-corpus if counts drift;
+// a known headcount via `num_speakers` sidesteps it entirely.
+pub const DEFAULT_CLUSTER_THRESHOLD: f32 = 0.75;
+
+/// sherpa FastClustering cluster count from an optional known headcount: a known
+/// count pins it; unknown → `-1` (auto — the threshold decides). This avoids
+/// sherpa-rs's blind default of a fixed 4 speakers when we pass `None`.
+fn sherpa_num_clusters(num_speakers: Option<u32>) -> i32 {
+    num_speakers.map(|n| n as i32).unwrap_or(-1)
+}
+
+/// Configuration for the diarizer: paths to the sherpa-onnx models and
+/// clustering controls.
 #[derive(Debug, Clone)]
 pub struct DiarizeConfig {
     /// Segmentation model (e.g. pyannote segmentation ONNX).
     pub segmentation_model: PathBuf,
     /// Speaker-embedding model (e.g. 3D-Speaker / wespeaker ONNX).
     pub embedding_model: PathBuf,
-    /// If `Some(n)`, cluster into exactly `n` speakers; if `None`, let the
-    /// backend estimate the count.
+    /// If `Some(n)`, cluster into exactly `n` speakers; if `None`, auto-estimate
+    /// the count using `cluster_threshold`.
     pub num_speakers: Option<u32>,
+    /// Cosine-distance merge threshold used only in auto mode (`num_speakers`
+    /// = None). See [`DEFAULT_CLUSTER_THRESHOLD`].
+    pub cluster_threshold: f32,
 }
 
 /// Runs sherpa-onnx diarization over 16 kHz mono PCM.
@@ -236,14 +254,17 @@ impl Diarizer {
     pub fn diarize(&self, pcm_16k_mono: &[f32]) -> Result<Vec<SpeakerTurn>> {
         use sherpa_rs::diarize::{Diarize, DiarizeConfig as SherpaConfig};
 
-        // sherpa-rs 0.6.8 DiarizeConfig: `num_clusters` is Option<i32> (None =
-        // let the backend estimate the speaker count). Fields listed explicitly
-        // so we don't depend on a `Default` impl.
+        // sherpa-rs 0.6.8 DiarizeConfig. All fields set explicitly — its Default
+        // blindly forces `num_clusters: Some(4)` + `threshold: 0.5`, which pins
+        // every meeting to 4 speakers (fixed count ignores the threshold). We
+        // instead pass -1 for auto mode so `threshold` actually drives the count,
+        // and only pin a count when the headcount is known. min_duration on/off
+        // = 0.3/0.5 (pyannote-sane; sherpa's 0.0/0.0 over-segments).
         let config = SherpaConfig {
-            num_clusters: self.config.num_speakers.map(|n| n as i32),
-            threshold: None,
-            min_duration_on: None,
-            min_duration_off: None,
+            num_clusters: Some(sherpa_num_clusters(self.config.num_speakers)),
+            threshold: Some(self.config.cluster_threshold),
+            min_duration_on: Some(0.3),
+            min_duration_off: Some(0.5),
             provider: None,
             debug: false,
         };
@@ -432,6 +453,15 @@ mod tests {
     }
 
     #[test]
+    fn sherpa_num_clusters_maps_unknown_to_auto() {
+        // The bug this fixes: sherpa-rs defaults a None cluster count to a fixed
+        // 4 speakers. We must instead pass -1 (auto: the threshold decides), and
+        // only pin a fixed count when the headcount is actually known.
+        assert_eq!(sherpa_num_clusters(None), -1);
+        assert_eq!(sherpa_num_clusters(Some(6)), 6);
+    }
+
+    #[test]
     fn cluster_pcm_gathers_only_that_speakers_turns() {
         // 1 sample per ms (sample_rate 1000) so sample index == ms. pcm[i] == i.
         let pcm: Vec<f32> = (0..2000).map(|i| i as f32).collect();
@@ -498,6 +528,7 @@ mod tests {
             segmentation_model: "/seg.onnx".into(),
             embedding_model: "/emb.onnx".into(),
             num_speakers: None,
+            cluster_threshold: DEFAULT_CLUSTER_THRESHOLD,
         });
         assert!(d.diarize(&[0.0f32; 16]).unwrap().is_empty());
     }

@@ -299,6 +299,7 @@ impl Processor {
             segmentation_model: cache.join("sherpa-segmentation.onnx"),
             embedding_model: cache.join("sherpa-embedding.onnx"),
             num_speakers: None,
+            cluster_threshold: super::diarization::DEFAULT_CLUSTER_THRESHOLD,
         });
         diarizer.diarize(pcm)
     }

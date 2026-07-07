@@ -125,6 +125,6 @@
 ## 風險 / 未知
 
 - **`diarize` feature 必須在 Windows build 開**,否則核心無 speaker(只有 None)。要確認出貨腳本 + 模型檔到位。
-- 中文 diarization 品質(sherpa segmentation / embedding 模型對中文會議的分群準度)需 Windows 實測調 `num_speakers` / 門檻。
+- 中文 diarization 品質(sherpa segmentation / embedding 模型對中文會議的分群準度)需實測調 `num_speakers` / 門檻。**已用真實會議錄音(108 min)在 Mac 用 sherpa-onnx Python 離線量測**:embedding 分得很開(同人 0.75–0.97、不同人 0.11–0.44,→ 聲紋門檻 0.5–0.6 穩);但 **sherpa-rs 預設把 `num_clusters` 固定成 4**(threshold 被忽略)→ 每場硬切 4 人。已改成 auto(`num_clusters=-1`)+ `cluster_threshold` 旋鈕(預設 `DEFAULT_CLUSTER_THRESHOLD=0.75`,對應該場約 6 人)+ `min_duration_on/off=0.3/0.5`。人數已知時傳 `num_speakers` 直接固定更準。
 - 聲紋記憶(Phase 3)取決於 sherpa-rs 是否暴露 embedding API —— **已證實可行**(0.6.8 `EmbeddingExtractor::compute_speaker_embedding` 抽每群聲紋,複用已打包的 3D-Speaker 模型;比對自寫 cosine)。準度(尤其會議室遠場)仍需 Windows 實測。見 issue #04。
 - Meet provider 需瀏覽器擴充,列後續再權衡是否值得破壞單一 app UX。

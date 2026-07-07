@@ -211,6 +211,7 @@ fn diarize_gemini_segments(
         segmentation_model: model_dir.join("sherpa-segmentation.onnx"),
         embedding_model: model_dir.join("sherpa-embedding.onnx"),
         num_speakers: None,
+        cluster_threshold: d::DEFAULT_CLUSTER_THRESHOLD,
     });
     let Ok(turns) = diarizer.diarize(&pcm) else {
         return;
