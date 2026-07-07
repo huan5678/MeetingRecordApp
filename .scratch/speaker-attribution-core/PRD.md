@@ -14,4 +14,4 @@
 
 合體:03 打開 diarization → 02 填「Speaker N」→ 01 標一次變真名。
 
-後續 phase(不在此):Teams UIA / Meet caption provider、聲紋記憶、會議偵測觸發。
+後續 phase:Teams UIA / Meet caption provider(Phase 2)、**聲紋記憶(Phase 3,可行性已確認 → issue #04)**、會議偵測觸發。

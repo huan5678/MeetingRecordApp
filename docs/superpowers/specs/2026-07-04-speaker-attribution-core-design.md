@@ -102,7 +102,7 @@
 
 1. **Phase 1(核心,平台無關,先做)**:C1(Gemini text-only)+ C2(diarization 權威;Windows build 開 diarize)+ C3(`speaker_labels` + resolve + 標一次 UI)。Mac 上純函式 / DB / 前端可全綠;diarization 實跑靠 Windows。
 2. **Phase 2(providers,選配)**:完成 07-03 的 Phase 0 UIA spike → 過則接 Teams UIA provider(upsert labels)。Meet caption 擴充。
-3. **Phase 3**:聲紋記憶(需從 sherpa 取每群 embedding 持久化 + cosine 匹配 + 門檻調校)。
+3. **Phase 3**:聲紋記憶(從 sherpa 取每群 embedding 持久化 + cosine 匹配 + 門檻調校)。**可行性已確認**,見 issue #04。
 
 ## 要動的檔案
 
@@ -126,5 +126,5 @@
 
 - **`diarize` feature 必須在 Windows build 開**,否則核心無 speaker(只有 None)。要確認出貨腳本 + 模型檔到位。
 - 中文 diarization 品質(sherpa segmentation / embedding 模型對中文會議的分群準度)需 Windows 實測調 `num_speakers` / 門檻。
-- 聲紋記憶(Phase 3)取決於 sherpa-rs 是否暴露 per-cluster embedding —— **未證實**。
+- 聲紋記憶(Phase 3)取決於 sherpa-rs 是否暴露 embedding API —— **已證實可行**(0.6.8 `EmbeddingExtractor::compute_speaker_embedding` 抽每群聲紋,複用已打包的 3D-Speaker 模型;比對自寫 cosine)。準度(尤其會議室遠場)仍需 Windows 實測。見 issue #04。
 - Meet provider 需瀏覽器擴充,列後續再權衡是否值得破壞單一 app UX。
