@@ -74,11 +74,36 @@ pub fn apply_turns_to_segments(
     segments: &mut [crate::models::TranscriptSegment],
     turns: &[SpeakerTurn],
 ) {
+    // Diarization off / produced nothing → leave every Gemini label untouched.
+    if turns.is_empty() {
+        return;
+    }
+    // Diarization ran → it OWNS attribution: label every segment "Speaker N" so
+    // the transcript never mixes "Speaker N" with Gemini's "講者 N". Prefer the
+    // maximal-overlap speaker; for a segment sitting in a diarization gap, fall
+    // back to the temporally nearest turn.
+    // ponytail: nearest-turn is a heuristic for uncovered gaps; good enough — a
+    // wrong guess is one click to rename. Upgrade to re-segmentation if needed.
     for seg in segments.iter_mut() {
-        if let Some(id) = best_speaker_for(seg.start_time_ms, seg.end_time_ms, turns) {
+        let id = best_speaker_for(seg.start_time_ms, seg.end_time_ms, turns)
+            .or_else(|| nearest_speaker_for(seg.start_time_ms, seg.end_time_ms, turns));
+        if let Some(id) = id {
             seg.speaker = Some(speaker_label(id));
         }
     }
+}
+
+/// Speaker of the turn with the smallest time-gap to `[start_ms, end_ms)`.
+/// `None` only when `turns` is empty. Ties break toward the lower speaker id.
+fn nearest_speaker_for(start_ms: i64, end_ms: i64, turns: &[SpeakerTurn]) -> Option<u32> {
+    turns
+        .iter()
+        .min_by_key(|t| {
+            // Gap distance: 0 if they overlap, else the space between them.
+            let gap = (start_ms - t.end_ms).max(t.start_ms - end_ms).max(0);
+            (gap, t.speaker_id)
+        })
+        .map(|t| t.speaker_id)
 }
 
 /// Find the speaker id with the greatest total overlap against
@@ -232,8 +257,10 @@ mod tests {
     }
 
     #[test]
-    fn apply_turns_overrides_where_covered_and_keeps_the_rest() {
-        // seg0 fully inside turn0; seg1 mostly turn1; seg2 has no turn coverage.
+    fn apply_turns_labels_every_segment_when_diarization_ran() {
+        // seg0/seg1 overlap turns; seg2 has NO overlapping turn. When diarization
+        // ran (turns non-empty) every segment must get a "Speaker N" so the
+        // transcript never mixes diarization labels with Gemini's "講者 N".
         let mut segs = vec![
             tseg(0, 1000, Some("講者 1")),
             tseg(1000, 2000, Some("講者 1")),
@@ -243,9 +270,9 @@ mod tests {
 
         apply_turns_to_segments(&mut segs, &turns);
 
-        assert_eq!(segs[0].speaker.as_deref(), Some("Speaker 1")); // overridden
-        assert_eq!(segs[1].speaker.as_deref(), Some("Speaker 2")); // overridden
-        assert_eq!(segs[2].speaker.as_deref(), Some("講者 2")); // no turn → kept (no regression)
+        assert_eq!(segs[0].speaker.as_deref(), Some("Speaker 1")); // overlap
+        assert_eq!(segs[1].speaker.as_deref(), Some("Speaker 2")); // overlap
+        assert_eq!(segs[2].speaker.as_deref(), Some("Speaker 2")); // nearest turn, no mix
     }
 
     #[test]
