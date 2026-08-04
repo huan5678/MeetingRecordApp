@@ -113,6 +113,10 @@ pub struct AppState {
     pub speaker_session: Mutex<Option<crate::detection::speaker::SpeakerCapture>>,
     /// Latest transcription progress per meeting id.
     pub transcription: Mutex<std::collections::HashMap<String, TranscriptionProgressEntry>>,
+    /// The configured recordings folder that was unreachable at boot (typically
+    /// an external drive that isn't plugged in). The store fell back to the
+    /// app-data default; the UI surfaces this so the user can pick a new folder.
+    pub storage_unavailable: Option<String>,
 }
 
 impl AppState {
@@ -123,15 +127,22 @@ impl AppState {
         std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
         let db = Database::open(data_dir.join("meetingrecord.sqlite3")).map_err(err)?;
         // Honor a user-configured recordings folder (general.storage_dir); fall
-        // back to the default app-data `recordings/` dir when unset.
-        let root = db
+        // back to the default app-data `recordings/` dir when unset — or when the
+        // configured one can't be opened (external drive unplugged), so the app
+        // still launches and can ask for a new folder instead of crashing.
+        let configured = db
             .get_setting("general.storage_dir")
             .ok()
             .flatten()
-            .filter(|s| !s.trim().is_empty())
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| data_dir.join("recordings"));
-        let files = FileStore::new(root).map_err(err)?;
+            .filter(|s| !s.trim().is_empty());
+        let default_root = data_dir.join("recordings");
+        let (files, storage_unavailable) = match configured {
+            Some(dir) => match FileStore::new(&dir) {
+                Ok(files) => (files, None),
+                Err(_) => (FileStore::new(&default_root).map_err(err)?, Some(dir)),
+            },
+            None => (FileStore::new(&default_root).map_err(err)?, None),
+        };
         Ok(AppState {
             db: Mutex::new(db),
             files,
@@ -139,6 +150,7 @@ impl AppState {
             session: Mutex::new(None),
             speaker_session: Mutex::new(None),
             transcription: Mutex::new(std::collections::HashMap::new()),
+            storage_unavailable,
         })
     }
 }
@@ -199,6 +211,9 @@ pub struct AudioDeviceDto {
 pub struct StorageUsageDto {
     pub total_bytes: u64,
     pub meeting_count: usize,
+    /// Set when the configured storage folder was unreachable at boot; the UI
+    /// shows it and prompts for a new one.
+    pub unavailable_dir: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1185,6 +1200,7 @@ pub fn get_storage_usage(state: State<'_, AppState>) -> Result<StorageUsageDto, 
     Ok(StorageUsageDto {
         total_bytes,
         meeting_count,
+        unavailable_dir: state.storage_unavailable.clone(),
     })
 }
 
@@ -1460,6 +1476,30 @@ mod tests {
                 .as_nanos()
         ));
         AppState::bootstrap(&dir).expect("bootstrap app state")
+    }
+
+    /// An unplugged external drive must not stop the app from booting: the
+    /// store falls back to the app-data default and reports the dead path.
+    #[test]
+    fn bootstrap_falls_back_when_storage_dir_unreachable() {
+        let dir = std::env::temp_dir().join(format!("mra_storage_{}", std::process::id()));
+        let first = AppState::bootstrap(&dir).expect("first boot");
+        // A path *under a regular file* can never be created — the portable
+        // stand-in for "drive letter isn't there".
+        let blocker = dir.join("not-a-dir");
+        std::fs::write(&blocker, b"x").unwrap();
+        let dead = blocker.join("recordings");
+        first
+            .db
+            .lock()
+            .unwrap()
+            .set_setting("general.storage_dir", dead.to_str().unwrap())
+            .unwrap();
+        drop(first);
+
+        let state = AppState::bootstrap(&dir).expect("boots despite dead storage dir");
+        assert_eq!(state.storage_unavailable.as_deref(), dead.to_str());
+        assert_eq!(state.files.root(), dir.join("recordings"));
     }
 
     #[test]

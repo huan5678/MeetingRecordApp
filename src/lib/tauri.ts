@@ -141,6 +141,8 @@ export interface TranscriptionStatusDto {
 export interface StorageUsageDto {
   totalBytes: number;
   meetingCount: number;
+  /** Configured folder that was unreachable at boot (e.g. external drive off). */
+  unavailableDir?: string | null;
 }
 
 export interface MigrateResultDto {

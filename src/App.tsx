@@ -14,6 +14,7 @@ import { MiniPanel } from "@/components/Floating/MiniPanel";
 import { MeetingList } from "@/components/Meeting/MeetingList";
 import { MeetingDetail } from "@/components/Meeting/MeetingDetail";
 import { SettingsPage } from "@/components/Settings/SettingsPage";
+import { StorageAlert } from "@/components/common/StorageAlert";
 import { useRecordingStore } from "@/stores/recordingStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useRecording } from "@/hooks/useRecording";
@@ -67,6 +68,8 @@ export default function App() {
           <TrayMenu />
         </div>
       </header>
+
+      <StorageAlert />
 
       <main className="flex-1 overflow-hidden">
         {view === VIEWS.Meetings && <MeetingList />}
