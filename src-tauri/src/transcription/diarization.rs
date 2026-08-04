@@ -213,6 +213,8 @@ pub const DEFAULT_CLUSTER_THRESHOLD: f32 = 0.75;
 /// sherpa FastClustering cluster count from an optional known headcount: a known
 /// count pins it; unknown → `-1` (auto — the threshold decides). This avoids
 /// sherpa-rs's blind default of a fixed 4 speakers when we pass `None`.
+// Only called from the `diarize`-gated path, but its test runs in every build.
+#[cfg_attr(not(feature = "diarize"), allow(dead_code))]
 fn sherpa_num_clusters(num_speakers: Option<u32>) -> i32 {
     num_speakers.map(|n| n as i32).unwrap_or(-1)
 }
